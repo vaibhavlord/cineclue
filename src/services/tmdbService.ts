@@ -1,5 +1,6 @@
 import { Movie, MovieFilters } from '../types/movie';
 import { MOVIE_DATABASE } from '../data/movies';
+import { DEFAULT_FILTERS } from '../data/filterOptions';
 import {
   matchesMovieFilters,
   normalizeTitle,
