@@ -576,7 +576,7 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
   };
 
   const filterKey = `${[...selectedCountries].sort().join(',')}|${[...selectedDecades].sort().join(',')}`;
-  const maxServerHistoryForFilter = 60;
+  const maxServerHistoryForFilter = 500;
 
   const serverRecentIds = (recentServedIdsByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
   const serverRecentTitles = (recentServedTitlesByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
@@ -1165,15 +1165,6 @@ async function fetchRandomTmdbRoundMovie(
     await harvestCandidates(0, excludeIds, 6);
   }
 
-  // If candidate pool was exhausted by session exclusions, relax exclusions to avoid blocking the player!
-  if (candidatePool.length < 3 && excludeIds.size > 0) {
-    const recentOnly = new Set(Array.from(excludeIds).slice(-3));
-    await harvestCandidates(0, recentOnly, 8);
-  }
-  if (candidatePool.length === 0) {
-    await harvestCandidates(0, new Set(), 8);
-  }
-
   // Shuffle candidates thoroughly
   for (let i = candidatePool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -1360,23 +1351,12 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
         8
       );
 
-      // If session exclusions exhausted candidates, automatically retry from TMDB with relaxed exclusions!
-      if (!selectedMovie) {
-        selectedMovie = await fetchRandomTmdbRoundMovie(
-          selectedCountries,
-          selectedDecades,
-          new Set(Array.from(clientExcludeIds).slice(-3)),
-          new Set(),
-          apiKey.trim(),
-          12
-        );
-      }
     } catch (tmdbErr) {
       console.error('Error fetching live TMDB round movie:', tmdbErr);
     }
   }
 
-  // Graceful fallback to verified built-in archive if TMDB is offline or apiKey not set
+  // Use the archive only when it can provide a fresh movie that still matches every active filter.
   if (!selectedMovie) {
     const { movie } = selectNonRepeatingMovie(
       MOVIE_DATABASE,
@@ -1384,34 +1364,32 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
       combinedExcludeList,
       [],
       Math.random,
-      combinedExcludeTitles,
-      { allowCycle: true }
+      combinedExcludeTitles
     );
 
-    let fallbackMovie = movie;
-    if (!fallbackMovie) {
-      // Find matching movie from MOVIE_DATABASE
-      const matching = MOVIE_DATABASE.filter((m) =>
-        matchesMovieFilters(m, { countries: selectedCountries, decades: selectedDecades })
-      );
-      fallbackMovie = matching.length > 0 ? matching[Math.floor(Math.random() * matching.length)] : MOVIE_DATABASE[0];
+    if (!movie) {
+      res.status(409).json({
+        error: 'No unseen movies match the selected filters.',
+        exhausted: true,
+      });
+      return;
     }
 
-    const w780Screenshots = (fallbackMovie.screenshots || []).map((s) =>
-      s.replace(/\/p\/w1280\//, '/p/w780/')
+    const w780Screenshots = (movie.screenshots || []).map((s) =>
+      s.replace(/\\/p\\/w1280\\//, '/p/w780/')
     );
 
     selectedMovie = {
-      movieId: fallbackMovie.id,
-      title: fallbackMovie.title,
-      year: fallbackMovie.year,
-      decade: fallbackMovie.decade,
-      country: fallbackMovie.country || (selectedCountries[0] || 'US'),
-      director: fallbackMovie.director,
-      overview: fallbackMovie.boxOfficeTrivia?.secretTrivia || '',
-      posterUrl: fallbackMovie.posterUrl || null,
+      movieId: movie.id,
+      title: movie.title,
+      year: movie.year,
+      decade: movie.decade,
+      country: movie.country || (selectedCountries[0] || 'US'),
+      director: movie.director,
+      overview: movie.boxOfficeTrivia?.secretTrivia || '',
+      posterUrl: movie.posterUrl || null,
       backdropUrl: w780Screenshots[4] || null,
-      genres: fallbackMovie.genres || ['Drama'],
+      genres: movie.genres || ['Drama'],
       clueImages: w780Screenshots,
     };
   }
