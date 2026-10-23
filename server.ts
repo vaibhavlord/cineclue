@@ -1314,7 +1314,12 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
     .filter((d) => Boolean(DECADE_DATE_RANGES[d]));
 
   const filterKey = `${[...selectedCountries].sort().join(',')}|${[...selectedDecades].sort().join(',')}`;
-  const maxServerHistoryForFilter = 60;
+  const maxServerHistoryForFilter = 500;
+
+  if (body.resetSeenPool === true) {
+    recentServedIdsByFilter.delete(filterKey);
+    recentServedTitlesByFilter.delete(filterKey);
+  }
 
   const serverRecentIds = (recentServedIdsByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
   const serverRecentTitles = (recentServedTitlesByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
@@ -1381,7 +1386,7 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
     }
 
     const w780Screenshots = (movie.screenshots || []).map((s) =>
-      s.replace(/\\/p\\/w1280\\//, '/p/w780/')
+      s.replace(/\/p\/w1280\//, '/p/w780/')
     );
 
     selectedMovie = {
