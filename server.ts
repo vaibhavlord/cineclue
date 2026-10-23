@@ -1031,45 +1031,75 @@ async function fetchRandomTmdbRoundMovie(
   };
 
   const extractFiveBackdrops = (backdrops: any[], primaryBackdrop?: string | null): string[] => {
-    if (!Array.isArray(backdrops) || backdrops.length === 0) return [];
+    if (!Array.isArray(backdrops) || backdrops.length === 0) {
+      if (primaryBackdrop && typeof primaryBackdrop === 'string' && primaryBackdrop.trim().startsWith('/')) {
+        const url = `https://image.tmdb.org/t/p/w780${primaryBackdrop}`;
+        return [url, url, url, url, url];
+      }
+      return [];
+    }
 
-    // Filter textless widescreen backdrops
     const seenPaths = new Set<string>();
     const textlessBackdrops: any[] = [];
+    const allValidBackdrops: any[] = [];
 
     for (const b of backdrops) {
       if (!b || typeof b.file_path !== 'string' || !b.file_path.trim().startsWith('/')) continue;
-      // Exclude backdrops containing titles or localized text
-      if (b.iso_639_1 !== null && b.iso_639_1 !== undefined && String(b.iso_639_1).trim() !== '') {
-        continue;
-      }
       if (seenPaths.has(b.file_path)) continue;
       seenPaths.add(b.file_path);
-      textlessBackdrops.push(b);
+      allValidBackdrops.push(b);
+
+      // Exclude backdrops containing localized titles or logos
+      if (b.iso_639_1 === null || b.iso_639_1 === undefined || String(b.iso_639_1).trim() === '') {
+        textlessBackdrops.push(b);
+      }
     }
 
-    // Require at least 5 distinct suitable backdrops
-    if (textlessBackdrops.length < 5) return [];
-
-    // Use our advanced scene partition selector from rules.ts
-    const selected = selectDistinctSceneScreenshots(textlessBackdrops, primaryBackdrop, 5, 'w780');
-    if (selected.length === 5 && new Set(selected).size === 5) {
-      return selected;
+    // 1. First priority: 5 distinct textless backdrops via scene selector
+    if (textlessBackdrops.length >= 5) {
+      const selected = selectDistinctSceneScreenshots(textlessBackdrops, primaryBackdrop, 5, 'w780');
+      if (selected.length === 5 && new Set(selected).size === 5) {
+        return selected;
+      }
+      const shuffled = [...textlessBackdrops].sort(() => Math.random() - 0.5);
+      const chosen = shuffled.slice(0, 5).map((b) => `https://image.tmdb.org/t/p/w780${b.file_path}`);
+      if (chosen.length === 5 && new Set(chosen).size === 5) {
+        return chosen;
+      }
     }
 
-    // Secondary selection: pick 5 distinct textless backdrops avoiding primary promo banner
-    const pool = primaryBackdrop
-      ? textlessBackdrops.filter((b) => b.file_path !== primaryBackdrop)
-      : textlessBackdrops;
-    const finalPool = pool.length >= 5 ? pool : textlessBackdrops;
+    // 2. Second priority: combine textless with any available widescreen backdrops to reach 5
+    const combinedPool = [...textlessBackdrops];
+    for (const b of allValidBackdrops) {
+      if (!combinedPool.some((p) => p.file_path === b.file_path)) {
+        combinedPool.push(b);
+      }
+    }
 
-    const shuffled = [...finalPool].sort(() => Math.random() - 0.5);
-    const chosen = shuffled.slice(0, 5).map((b) => `https://image.tmdb.org/t/p/w780${b.file_path}`);
-    return chosen.length === 5 && new Set(chosen).size === 5 ? chosen : [];
+    if (combinedPool.length >= 5) {
+      const chosen = combinedPool.slice(0, 5).map((b) => `https://image.tmdb.org/t/p/w780${b.file_path}`);
+      return chosen;
+    }
+
+    // 3. Third priority: pad available backdrops so movie is never discarded
+    if (combinedPool.length >= 1) {
+      const urls = combinedPool.map((b) => `https://image.tmdb.org/t/p/w780${b.file_path}`);
+      while (urls.length < 5) {
+        urls.push(...urls);
+      }
+      return urls.slice(0, 5);
+    }
+
+    if (primaryBackdrop && typeof primaryBackdrop === 'string' && primaryBackdrop.trim().startsWith('/')) {
+      const url = `https://image.tmdb.org/t/p/w780${primaryBackdrop}`;
+      return [url, url, url, url, url];
+    }
+
+    return [];
   };
 
   const candidatePool: any[] = [];
-  const harvestCandidates = async (minVotes: number) => {
+  const harvestCandidates = async (minVotes: number, activeExcludes: Set<string>, pagesCount = 4) => {
     try {
       const sortOptions = ['popularity.desc', 'vote_count.desc'];
       const chosenSort = sortOptions[Math.floor(Math.random() * sortOptions.length)];
@@ -1077,17 +1107,16 @@ async function fetchRandomTmdbRoundMovie(
       const page1Res = await fetch(buildDiscoverUrl(1, minVotes, chosenSort));
       if (!page1Res.ok) return;
       const page1Data = await page1Res.json();
-      const totalPages = Math.min(Number(page1Data.total_pages) || 1, 25);
+      const totalPages = Math.min(Number(page1Data.total_pages) || 1, 35);
 
-      // Randomly select pages to avoid always choosing the most popular movies
       const pagesToFetch = [1];
       if (totalPages > 1) {
-        const randA = Math.floor(Math.random() * (totalPages - 1)) + 2;
-        pagesToFetch.push(randA);
-        if (totalPages > 3) {
-          const randB = Math.floor(Math.random() * (totalPages - 1)) + 2;
-          if (randB !== randA) pagesToFetch.push(randB);
+        const availablePages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+        for (let i = availablePages.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [availablePages[i], availablePages[j]] = [availablePages[j], availablePages[i]];
         }
+        pagesToFetch.push(...availablePages.slice(0, pagesCount));
       }
 
       const pageResponses = await Promise.all(
@@ -1111,8 +1140,8 @@ async function fetchRandomTmdbRoundMovie(
           const normTitle = normalizeTitle(m.title);
 
           if (
-            excludeIds.has(idStr) ||
-            excludeIds.has(`tmdb-${idStr}`) ||
+            activeExcludes.has(idStr) ||
+            activeExcludes.has(`tmdb-${idStr}`) ||
             (normTitle && excludeTitles.has(normTitle))
           ) {
             continue;
@@ -1128,12 +1157,21 @@ async function fetchRandomTmdbRoundMovie(
     }
   };
 
-  await harvestCandidates(primaryMinVotes);
-  if (candidatePool.length < 6) {
-    await harvestCandidates(secondaryMinVotes);
+  await harvestCandidates(primaryMinVotes, excludeIds, 3);
+  if (candidatePool.length < 8) {
+    await harvestCandidates(secondaryMinVotes, excludeIds, 5);
   }
-  if (candidatePool.length < 3) {
-    await harvestCandidates(0);
+  if (candidatePool.length < 4) {
+    await harvestCandidates(0, excludeIds, 6);
+  }
+
+  // If candidate pool was exhausted by session exclusions, relax exclusions to avoid blocking the player!
+  if (candidatePool.length < 3 && excludeIds.size > 0) {
+    const recentOnly = new Set(Array.from(excludeIds).slice(-3));
+    await harvestCandidates(0, recentOnly, 8);
+  }
+  if (candidatePool.length === 0) {
+    await harvestCandidates(0, new Set(), 8);
   }
 
   // Shuffle candidates thoroughly
@@ -1144,7 +1182,7 @@ async function fetchRandomTmdbRoundMovie(
 
   let attempts = 0;
   for (const candidate of candidatePool) {
-    if (attempts >= maxRetries + 10) break;
+    if (attempts >= maxRetries + 20) break;
     attempts++;
 
     try {
@@ -1166,7 +1204,6 @@ async function fetchRandomTmdbRoundMovie(
       const detailsData = await detailsRes.json();
 
       const clueImages = extractFiveBackdrops(imagesData.backdrops || [], detailsData.backdrop_path);
-      // If fewer than five suitable images, try another movie (retry limit handled by loop)
       if (clueImages.length < 5) {
         continue;
       }
@@ -1182,7 +1219,13 @@ async function fetchRandomTmdbRoundMovie(
       const fallbackProdOrigins: string[] = (
         (detailsData.production_countries || []).map((pc: any) => pc.iso_3166_1).filter(Boolean)
       ).map((c: string) => c.toUpperCase());
-      const originCountries = [...primaryOrigins, ...fallbackProdOrigins];
+
+      // Comprehensive Indian cinema language mapping (Hindi, Telugu, Tamil, Malayalam, Kannada, etc.)
+      const indianLangs = new Set(['hi', 'te', 'ta', 'ml', 'kn', 'bn', 'mr', 'pa', 'gu', 'ur']);
+      const langOrigins =
+        detailsData.original_language && indianLangs.has(detailsData.original_language) ? ['IN'] : [];
+      const originCountries = [...primaryOrigins, ...fallbackProdOrigins, ...langOrigins];
+
       const matchedOrigin =
         selectedCountries.find((sc) => originCountries.includes(sc)) ||
         originCountries[0] ||
@@ -1314,14 +1357,26 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
         clientExcludeIds,
         combinedExcludeTitles,
         apiKey.trim(),
-        5
+        8
       );
+
+      // If session exclusions exhausted candidates, automatically retry from TMDB with relaxed exclusions!
+      if (!selectedMovie) {
+        selectedMovie = await fetchRandomTmdbRoundMovie(
+          selectedCountries,
+          selectedDecades,
+          new Set(Array.from(clientExcludeIds).slice(-3)),
+          new Set(),
+          apiKey.trim(),
+          12
+        );
+      }
     } catch (tmdbErr) {
       console.error('Error fetching live TMDB round movie:', tmdbErr);
     }
   }
 
-  // Graceful fallback to verified built-in archive if TMDB is offline or retries exhausted
+  // Graceful fallback to verified built-in archive if TMDB is offline or apiKey not set
   if (!selectedMovie) {
     const { movie } = selectNonRepeatingMovie(
       MOVIE_DATABASE,
@@ -1333,7 +1388,15 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
       { allowCycle: true }
     );
 
-    const fallbackMovie = movie || MOVIE_DATABASE[0];
+    let fallbackMovie = movie;
+    if (!fallbackMovie) {
+      // Find matching movie from MOVIE_DATABASE
+      const matching = MOVIE_DATABASE.filter((m) =>
+        matchesMovieFilters(m, { countries: selectedCountries, decades: selectedDecades })
+      );
+      fallbackMovie = matching.length > 0 ? matching[Math.floor(Math.random() * matching.length)] : MOVIE_DATABASE[0];
+    }
+
     const w780Screenshots = (fallbackMovie.screenshots || []).map((s) =>
       s.replace(/\/p\/w1280\//, '/p/w780/')
     );
@@ -1343,7 +1406,7 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
       title: fallbackMovie.title,
       year: fallbackMovie.year,
       decade: fallbackMovie.decade,
-      country: fallbackMovie.country || 'US',
+      country: fallbackMovie.country || (selectedCountries[0] || 'US'),
       director: fallbackMovie.director,
       overview: fallbackMovie.boxOfficeTrivia?.secretTrivia || '',
       posterUrl: fallbackMovie.posterUrl || null,

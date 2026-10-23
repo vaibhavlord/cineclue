@@ -184,10 +184,16 @@ export default function App() {
     // If currently in active gameplay (playing, paused, or post-round modal), load a round matching the updated filters!
     if ((gameState === 'playing' || gameState === 'paused' || gameState === 'gameover') && gameMode !== 'daily') {
       setIsLoadingMovie(true);
+      setShowExhaustedModal(false);
       try {
         const excludeList = Array.from(sessionPlayedIds.current);
         const excludeTitles = Array.from(sessionPlayedTitles.current);
-        const roundData = await startNewGameRound(newFilters, excludeList, excludeTitles);
+        let roundData = await startNewGameRound(newFilters, excludeList, excludeTitles);
+        if (!roundData || !roundData.roundId) {
+          sessionPlayedIds.current.clear();
+          sessionPlayedTitles.current.clear();
+          roundData = await startNewGameRound(newFilters, [], []);
+        }
         if (roundData && roundData.roundId) {
           setActiveRound(roundData);
           setRevealedMovie(null);
@@ -200,12 +206,29 @@ export default function App() {
             setSpeedrunTimer(15);
           }
           setGameState('playing');
-        } else {
-          setShowExhaustedModal(true);
         }
       } catch (err) {
-        console.error('Error applying filters to game round:', err);
-        setShowExhaustedModal(true);
+        console.warn('Error applying filters, auto-recovering from TMDB with cleared exclusions:', err);
+        try {
+          sessionPlayedIds.current.clear();
+          sessionPlayedTitles.current.clear();
+          const roundData = await startNewGameRound(newFilters, [], []);
+          if (roundData && roundData.roundId) {
+            setActiveRound(roundData);
+            setRevealedMovie(null);
+            setRevealedTiers(roundData.revealedClues || 1);
+            setGuesses([]);
+            setUnlockedLetters(new Set());
+            setRoundStatus('playing');
+            setLastRoundPoints(0);
+            if (gameMode === 'speedrun') {
+              setSpeedrunTimer(15);
+            }
+            setGameState('playing');
+          }
+        } catch (innerErr) {
+          console.error('Auto recovery failed:', innerErr);
+        }
       } finally {
         setIsLoadingMovie(false);
       }
@@ -231,9 +254,16 @@ export default function App() {
             setRevealedTiers(roundData.revealedClues || 1);
             setGameState('playing');
           } else {
-            setShowExhaustedModal(true);
+            return startNewGameRound(filtersRef.current, [], []);
           }
-        }).catch(() => setShowExhaustedModal(true));
+        }).then((recoveryRound) => {
+          if (recoveryRound && recoveryRound.roundId) {
+            setActiveRound(recoveryRound);
+            setRevealedMovie(null);
+            setRevealedTiers(recoveryRound.revealedClues || 1);
+            setGameState('playing');
+          }
+        }).catch((err) => console.warn('Autostart recovery:', err));
       }
     }
   }, []);
@@ -290,12 +320,18 @@ export default function App() {
     playProjectorClick();
     const activeFilters = filtersRef.current;
     setIsLoadingMovie(true);
+    setShowExhaustedModal(false);
     setGuessFeedbackMessage(null);
 
     try {
       const excludeList = Array.from(sessionPlayedIds.current);
       const excludeTitles = Array.from(sessionPlayedTitles.current);
-      const roundData = await startNewGameRound(activeFilters, excludeList, excludeTitles);
+      let roundData = await startNewGameRound(activeFilters, excludeList, excludeTitles);
+      if (!roundData || !roundData.roundId) {
+        sessionPlayedIds.current.clear();
+        sessionPlayedTitles.current.clear();
+        roundData = await startNewGameRound(activeFilters, [], []);
+      }
       if (roundData && roundData.roundId) {
         setActiveRound(roundData);
         setRevealedMovie(null);
@@ -310,12 +346,31 @@ export default function App() {
           setSpeedrunTimer(15);
         }
         setGameState('playing');
-      } else {
-        setShowExhaustedModal(true);
       }
     } catch (err) {
-      console.error('Error starting game round:', err);
-      setShowExhaustedModal(true);
+      console.warn('Error starting game round, auto-retrying via TMDB:', err);
+      try {
+        sessionPlayedIds.current.clear();
+        sessionPlayedTitles.current.clear();
+        const roundData = await startNewGameRound(activeFilters, [], []);
+        if (roundData && roundData.roundId) {
+          setActiveRound(roundData);
+          setRevealedMovie(null);
+          setGameMode(mode);
+          setCurrentMovieIndex(0);
+          setRevealedTiers(roundData.revealedClues || 1);
+          setGuesses([]);
+          setUnlockedLetters(new Set());
+          setRoundStatus('playing');
+          setLastRoundPoints(0);
+          if (mode === 'speedrun') {
+            setSpeedrunTimer(15);
+          }
+          setGameState('playing');
+        }
+      } catch (innerErr) {
+        console.error('Recovery failed:', innerErr);
+      }
     } finally {
       setIsLoadingMovie(false);
     }
@@ -538,10 +593,16 @@ export default function App() {
     }
 
     setIsLoadingMovie(true);
+    setShowExhaustedModal(false);
     try {
       const excludeList = Array.from(sessionPlayedIds.current);
       const excludeTitles = Array.from(sessionPlayedTitles.current);
-      const roundData = await startNewGameRound(filtersRef.current, excludeList, excludeTitles);
+      let roundData = await startNewGameRound(filtersRef.current, excludeList, excludeTitles);
+      if (!roundData || !roundData.roundId) {
+        sessionPlayedIds.current.clear();
+        sessionPlayedTitles.current.clear();
+        roundData = await startNewGameRound(filtersRef.current, [], []);
+      }
       if (roundData && roundData.roundId) {
         setActiveRound(roundData);
         setRevealedMovie(null);
@@ -555,12 +616,30 @@ export default function App() {
           setSpeedrunTimer(15);
         }
         setGameState('playing');
-      } else {
-        setShowExhaustedModal(true);
       }
     } catch (err) {
-      console.error('Error starting next film round:', err);
-      setShowExhaustedModal(true);
+      console.warn('Error starting next film round, auto-retrying via TMDB:', err);
+      try {
+        sessionPlayedIds.current.clear();
+        sessionPlayedTitles.current.clear();
+        const roundData = await startNewGameRound(filtersRef.current, [], []);
+        if (roundData && roundData.roundId) {
+          setActiveRound(roundData);
+          setRevealedMovie(null);
+          setCurrentMovieIndex((prev) => prev + 1);
+          setRevealedTiers(roundData.revealedClues || 1);
+          setGuesses([]);
+          setUnlockedLetters(new Set());
+          setRoundStatus('playing');
+          setLastRoundPoints(0);
+          if (gameMode === 'speedrun') {
+            setSpeedrunTimer(15);
+          }
+          setGameState('playing');
+        }
+      } catch (innerErr) {
+        console.error('Recovery failed:', innerErr);
+      }
     } finally {
       setIsLoadingMovie(false);
     }

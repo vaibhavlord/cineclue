@@ -504,7 +504,7 @@ export async function startNewGameRound(
     new Set([...seenTitles, ...customExcludeTitles.map(normalizeTitle).filter(Boolean)])
   );
 
-  const res = await fetch('/api/game/round/new', {
+  let res = await fetch('/api/game/round/new', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -514,6 +514,20 @@ export async function startNewGameRound(
       decades: filters.decades || [],
     }),
   });
+
+  // If initial attempt with exclusions did not succeed, auto-retry with fresh exclusions from TMDB
+  if (!res.ok) {
+    res = await fetch('/api/game/round/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        excludeIds: [],
+        excludeTitles: [],
+        countries: filters.countries || [],
+        decades: filters.decades || [],
+      }),
+    });
+  }
 
   if (!res.ok) {
     throw new Error(`Failed to start game round: ${res.statusText}`);
