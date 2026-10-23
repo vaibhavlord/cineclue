@@ -558,7 +558,8 @@ function createLocalFallbackRound(
 export async function startNewGameRound(
   filters: MovieFilters = DEFAULT_FILTERS,
   customExcludeIds: string[] = [],
-  customExcludeTitles: string[] = []
+  customExcludeTitles: string[] = [],
+  resetSeenPool = false
 ): Promise<PublicRoundData | null> {
   const seen = getSeenMovieIds();
   const allExcluded = buildOrderedExclusionList(seen, customExcludeIds);
@@ -576,6 +577,7 @@ export async function startNewGameRound(
         excludeTitles: allExcludedTitles.slice(-500),
         countries: filters.countries || [],
         decades: filters.decades || [],
+        resetSeenPool,
       }),
     });
 
