@@ -1,0 +1,6 @@
+{
+  "name": "CineClue - The Mystery Movie Deduction Game",
+  "description": "An interactive cinematic guessing game where players deduce famous films through progressive clues: emoji cryptograms, audio soundbites, minimalist poster art, iconic quotes, and cast archetypes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
