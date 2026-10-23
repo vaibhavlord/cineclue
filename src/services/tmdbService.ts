@@ -1,5 +1,6 @@
 import { Movie, MovieFilters } from '../types/movie';
 import { MOVIE_DATABASE } from '../data/movies';
+import { DEFAULT_FILTERS } from '../data/filterOptions';
 import {
   matchesMovieFilters,
   normalizeTitle,
@@ -511,21 +512,18 @@ function createLocalFallbackRound(
   filters: MovieFilters = DEFAULT_FILTERS,
   allExcluded: string[] = [],
   allExcludedTitles: string[] = []
-): PublicRoundData {
+): PublicRoundData | null {
   const { movie } = selectNonRepeatingMovie(
     MOVIE_DATABASE,
     filters,
     allExcluded,
     [],
     Math.random,
-    allExcludedTitles,
-    { allowCycle: true }
+    allExcludedTitles
   );
 
-  const fallback =
-    movie ||
-    MOVIE_DATABASE.find((m) => matchesMovieFilters(m, filters)) ||
-    MOVIE_DATABASE[Math.floor(Math.random() * MOVIE_DATABASE.length)];
+  if (!movie) return null;
+  const fallback = movie
 
   const roundId = `local-${fallback.id}-${Date.now()}`;
   localActiveRounds.set(roundId, {
@@ -561,7 +559,7 @@ export async function startNewGameRound(
   filters: MovieFilters = DEFAULT_FILTERS,
   customExcludeIds: string[] = [],
   customExcludeTitles: string[] = []
-): Promise<PublicRoundData> {
+): Promise<PublicRoundData | null> {
   const seen = getSeenMovieIds();
   const allExcluded = buildOrderedExclusionList(seen, customExcludeIds);
   const seenTitles = getSeenMovieTitles();
@@ -570,29 +568,19 @@ export async function startNewGameRound(
   );
 
   try {
-    let res = await fetch('/api/game/round/new', {
+    const res = await fetch('/api/game/round/new', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        excludeIds: allExcluded.slice(-140),
-        excludeTitles: allExcludedTitles.slice(-50),
+        excludeIds: allExcluded.slice(-500),
+        excludeTitles: allExcludedTitles.slice(-500),
         countries: filters.countries || [],
         decades: filters.decades || [],
       }),
     });
 
-    // If initial attempt with exclusions did not succeed, auto-retry with fresh exclusions from TMDB
-    if (!res.ok) {
-      res = await fetch('/api/game/round/new', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          excludeIds: [],
-          excludeTitles: [],
-          countries: filters.countries || [],
-          decades: filters.decades || [],
-        }),
-      });
+    if (res.status === 409) {
+      return null;
     }
 
     if (res.ok) {
@@ -602,13 +590,15 @@ export async function startNewGameRound(
       }
       return data;
     }
+
+    throw new Error(`Failed to start game round: ${res.statusText}`);
   } catch (err) {
-    console.warn('Backend server /api/game/round/new unreachable, using resilient offline round:', err);
+    console.warn('Game round service unavailable, selecting an unseen local movie:', err);
   }
 
-  // Resilient fallback: seamlessly starts round from curated archive so playing NEVER fails
+  // Offline fallback keeps the active filters and excludes every locally recorded movie.
   const localRound = createLocalFallbackRound(filters, allExcluded, allExcludedTitles);
-  if (Array.isArray(localRound.imageUrls)) {
+  if (localRound && Array.isArray(localRound.imageUrls)) {
     preloadClueImages(localRound.imageUrls);
   }
   return localRound;
