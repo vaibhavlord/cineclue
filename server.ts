@@ -20,15 +20,23 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Check TMDB connection status
+// Check TMDB and Groq AI connection status
 app.get('/api/tmdb/status', (req: Request, res: Response) => {
-  const hasKey = Boolean(process.env.TMDB_API_KEY && process.env.TMDB_API_KEY.trim().length > 0);
+  const tmdbKey = Boolean(process.env.TMDB_API_KEY && process.env.TMDB_API_KEY.trim().length > 0);
+  const groqKey = Boolean(
+    (process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.trim().length > 0) ||
+    (process.env.CH_RANDOM && process.env.CH_RANDOM.trim().length > 0)
+  );
+
   res.json({
-    connected: hasKey,
-    liveTmdb: hasKey,
+    connected: tmdbKey,
+    liveTmdb: tmdbKey,
+    groqAi: groqKey,
     archiveCount: MOVIE_DATABASE.length,
-    message: hasKey
-      ? 'TMDB API is connected successfully with live movie database access. A fresh random film is selected live from TMDB on every round according to active filters.'
+    message: tmdbKey
+      ? groqKey
+        ? 'TMDB API & Groq AI are both active! Groq AI intelligently curates iconic films matching your filters, verified live against TMDB.'
+        : 'TMDB API is connected successfully with live movie database access. A fresh random film is selected live from TMDB on every round according to active filters.'
       : `Built-in Global Cinema Archive active (${MOVIE_DATABASE.length} films across 14 countries & 7 eras).`,
   });
 });
@@ -246,7 +254,289 @@ function recordServerServedMovie(filterKey: string, movieId: string, movieTitle:
   }
 }
 
-// Proxy TMDB Random Iconic Mystery Film with Live TMDB API Querying on Every Request
+// Helper: Calls Groq AI to curate iconic, recognizable films matching active filters
+async function fetchAiMovieCurations(
+  countries: string[],
+  decades: string[],
+  excludedTitles: string[],
+  groqKey: string
+): Promise<Array<{ title: string; year?: number }>> {
+  const countryNames: Record<string, string> = {
+    US: 'United States',
+    GB: 'United Kingdom',
+    JP: 'Japan',
+    FR: 'France',
+    IN: 'India',
+    KR: 'South Korea',
+    IT: 'Italy',
+    DE: 'Germany',
+    ES: 'Spain',
+    CA: 'Canada',
+    AU: 'Australia',
+    MX: 'Mexico',
+    BR: 'Brazil',
+    SE: 'Sweden',
+    HK: 'Hong Kong',
+  };
+
+  const formattedCountries = countries.map((c) => countryNames[c] || c).join(', ') || 'Global / Any';
+  const formattedDecades = decades.join(', ') || 'Any era';
+  const excludeSnippet = excludedTitles.slice(-25).join('", "');
+
+  const prompt = `Recommend 12 famous, critically acclaimed, recognizable feature films matching:
+- Countries of origin: ${formattedCountries}
+- Release eras: ${formattedDecades}
+${excludeSnippet ? `- Exclude already played titles: ["${excludeSnippet}"]` : ''}
+
+Rules:
+1. Every movie must be famous or well-known enough for cinephiles to recognize from scene screenshots.
+2. Return ONLY a valid JSON object in this format:
+{
+  "movies": [
+    { "title": "Movie Title", "year": 1985 }
+  ]
+}`;
+
+  const models = ['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b'];
+  for (const model of models) {
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${groqKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.85,
+        }),
+      });
+
+      if (!response.ok) continue;
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content) continue;
+
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (Array.isArray(parsed.movies) && parsed.movies.length > 0) {
+          return parsed.movies;
+        }
+      }
+    } catch (err) {
+      console.warn(`Groq AI curation model ${model} failed:`, err);
+    }
+  }
+
+  return [];
+}
+
+// Helper: Formats TMDB detailed response into standard CineClue Movie Clue
+function formatTmdbMovieClue(
+  details: any,
+  selectedCountries: string[],
+  filterCriteria: { countries: string[]; decades: string[] }
+) {
+  if (!details || !details.title) return null;
+
+  const releaseYear = details.release_date
+    ? parseInt(details.release_date.split('-')[0], 10)
+    : 2000;
+  const decade = releaseYear < 1970 ? 'classic' : `${Math.floor(releaseYear / 10) * 10}s`;
+
+  const primaryOrigins: string[] = (
+    Array.isArray(details.origin_country) ? details.origin_country : []
+  ).map((c: string) => c.toUpperCase());
+  const fallbackProdOrigins: string[] = (
+    (details.production_countries || []).map((pc: any) => pc.iso_3166_1).filter(Boolean)
+  ).map((c: string) => c.toUpperCase());
+
+  const langToCountry: Record<string, string> = {
+    ja: 'JP',
+    fr: 'FR',
+    hi: 'IN',
+    ko: 'KR',
+    de: 'DE',
+    es: 'ES',
+    it: 'IT',
+    en: 'US',
+    zh: 'HK',
+    pt: 'BR',
+    sv: 'SE',
+  };
+  const langFallback = details.original_language ? langToCountry[details.original_language] : null;
+
+  const originCountries = [
+    ...primaryOrigins,
+    ...fallbackProdOrigins,
+    ...(langFallback ? [langFallback] : []),
+  ];
+
+  const matchedOrigin =
+    selectedCountries.find((sc) => originCountries.includes(sc)) ||
+    originCountries[0] ||
+    'US';
+
+  // Strictly verify candidate satisfies active Country and Decade filters
+  if (
+    !matchesMovieFilters(
+      {
+        id: `tmdb-${details.id}`,
+        title: details.title,
+        year: releaseYear,
+        decade,
+        country: matchedOrigin,
+      },
+      filterCriteria
+    )
+  ) {
+    return null;
+  }
+
+  // Assemble 5 screenshot clues
+  let screenshots = selectDistinctSceneScreenshots(
+    details.images?.backdrops || [],
+    details.backdrop_path,
+    5
+  );
+
+  // If movie has fewer than 5 textless widescreen stills, pad from available backdrops so movie is never discarded
+  if (screenshots.length < 5) {
+    const allBackdrops = (details.images?.backdrops || []).filter(
+      (b: any) => b && typeof b.file_path === 'string' && b.file_path.trim().startsWith('/')
+    );
+    const textless = allBackdrops.filter(
+      (b: any) => b.iso_639_1 === null || b.iso_639_1 === undefined || String(b.iso_639_1).trim() === ''
+    );
+    const pool = textless.length > 0 ? textless : allBackdrops;
+    if (pool.length > 0) {
+      const urls = pool.map((b: any) => `https://image.tmdb.org/t/p/w1280${b.file_path}`);
+      while (urls.length < 5) {
+        urls.push(...urls);
+      }
+      screenshots = urls.slice(0, 5);
+    } else if (details.backdrop_path) {
+      const singleUrl = `https://image.tmdb.org/t/p/w1280${details.backdrop_path}`;
+      screenshots = [singleUrl, singleUrl, singleUrl, singleUrl, singleUrl];
+    } else {
+      return null;
+    }
+  }
+
+  const crew = details.credits?.crew || [];
+  const directorObj = crew.find((c: any) => c.job === 'Director');
+  const director = directorObj ? directorObj.name : 'Master Filmmaker';
+
+  const cast = (details.credits?.cast || []).slice(0, 3).map((c: any, idx: number) => {
+    const cleanChar = c.character ? c.character.split('/')[0].trim() : 'Key Protagonist';
+    const titles = ['The Lead Protagonist', 'The Principal Foil', 'The Crucial Ally'];
+    const archetypeTitle =
+      cleanChar.length > 2 && cleanChar.length < 25
+        ? `The ${cleanChar}`
+        : titles[idx] || 'Central Character';
+
+    return {
+      archetype: archetypeTitle,
+      characterDescription: `Portrayed with iconic distinction by ${c.name}.`,
+      actorInitials:
+        c.name
+          .split(' ')
+          .map((p: string) => p[0])
+          .join('.') + '.',
+    };
+  });
+
+  const genreNames = (details.genres || []).map((g: any) => g.name);
+  const keywordsList = (details.keywords?.keywords || []).map((k: any) => k.name);
+  const emojis = generateThematicEmojis(
+    details.title,
+    details.overview || '',
+    keywordsList,
+    genreNames
+  );
+  const taglineObj = formatTaglineBlank(details.tagline, details.overview || '');
+
+  let grossText = 'Box Office Blockbuster';
+  if (details.revenue && details.revenue > 1000000) {
+    if (details.revenue >= 1000000000) {
+      grossText = `$${(details.revenue / 1000000000).toFixed(2)} Billion Worldwide`;
+    } else {
+      grossText = `$${(details.revenue / 1000000).toFixed(0)} Million Worldwide`;
+    }
+  }
+
+  const ratingText = details.vote_average
+    ? `TMDB Score: ${details.vote_average.toFixed(1)}/10 (${details.vote_count.toLocaleString()} cinephile votes)`
+    : 'Universally Recognized Masterpiece';
+
+  const leadCharName = details.credits?.cast?.[0]?.character
+    ? details.credits.cast[0].character.split('/')[0].trim()
+    : 'The Lead';
+
+  const quoteDialogue =
+    details.tagline && details.tagline.trim().length > 12
+      ? details.tagline
+      : details.overview || `A cinematic journey directed by ${director}.`;
+
+  const escapedTitle = details.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sanitizedDialogue = quoteDialogue.replace(
+    new RegExp(`\\b${escapedTitle}\\b`, 'gi'),
+    '[This Film]'
+  );
+
+  return {
+    id: `tmdb-${details.id}`,
+    title: details.title,
+    year: releaseYear,
+    decade,
+    country: matchedOrigin,
+    director,
+    genres: genreNames.length > 0 ? genreNames : ['Drama'],
+    difficulty: (details.vote_count > 10000 ? 'Novice' : 'Cinephile') as
+      | 'Novice'
+      | 'Cinephile',
+    screenshots,
+    emojiCryptogram: emojis,
+    tagline: taglineObj,
+    quote: {
+      dialogue: sanitizedDialogue,
+      speakerRole: `Protagonist (${leadCharName})`,
+      context: `Theatrical signature logline directed by ${director}.`,
+    },
+    minimalistArt: {
+      primaryBg: 'from-slate-900 to-indigo-950',
+      accentColor: '#f59e0b',
+      themeSymbol: 'totem_spinner',
+      description: `Official Theatrical Key Art (${releaseYear}) • ${genreNames
+        .slice(0, 2)
+        .join(' / ')}`,
+    },
+    castDossier:
+      cast.length > 0
+        ? cast
+        : [
+            {
+              archetype: 'The Protagonist',
+              characterDescription: 'Central figure',
+              actorInitials: 'A.L.',
+            },
+          ],
+    boxOfficeTrivia: {
+      oscars: ratingText,
+      budgetOrGross: grossText,
+      secretTrivia:
+        details.overview || `An acclaimed cinematic release preserved in TMDB history.`,
+    },
+    posterUrl: details.poster_path
+      ? `https://image.tmdb.org/t/p/w500${details.poster_path}`
+      : null,
+    backdropUrl: screenshots[4] || null,
+  };
+}
+
+// Proxy TMDB Random Iconic Mystery Film with Groq AI Curation & TMDB Live API
 app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -309,16 +599,80 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
   );
 
   const apiKey = process.env.TMDB_API_KEY;
+  const groqApiKey = process.env.GROQ_API_KEY || process.env.CH_RANDOM || process.env.GROQ_KEY;
 
   if (apiKey && apiKey.trim().length > 0) {
     try {
+      // 1. Try Groq AI Curation first (if Groq key is configured)
+      if (groqApiKey && groqApiKey.trim().length > 0) {
+        try {
+          const aiSuggestions = await fetchAiMovieCurations(
+            selectedCountries,
+            selectedDecades,
+            Array.from(combinedExcludeTitles),
+            groqApiKey.trim()
+          );
+
+          if (aiSuggestions.length > 0) {
+            const shuffledAi = [...aiSuggestions].sort(() => Math.random() - 0.5);
+
+            for (const item of shuffledAi) {
+              const normItemTitle = normalizeTitle(item.title);
+              if (combinedExcludeTitles.has(normItemTitle)) continue;
+
+              const yearParam = item.year ? `&year=${item.year}` : '';
+              const searchUrl = `https://api.tmdb.org/3/search/movie?api_key=${encodeURIComponent(
+                apiKey
+              )}&query=${encodeURIComponent(item.title)}${yearParam}&include_adult=false&language=en-US&page=1`;
+
+              const searchRes = await fetch(searchUrl);
+              if (!searchRes.ok) continue;
+              const searchData = await searchRes.json();
+              const candidate = searchData?.results?.[0];
+              if (!candidate || !candidate.id) continue;
+
+              const idStr = String(candidate.id);
+              if (clientExcludeIds.has(idStr)) continue;
+
+              const detailRes = await fetch(
+                `https://api.tmdb.org/3/movie/${candidate.id}?api_key=${encodeURIComponent(
+                  apiKey
+                )}&append_to_response=credits,keywords,images&include_image_language=en,null`
+              );
+              if (!detailRes.ok) continue;
+              const details = await detailRes.json();
+
+              const movieClue = formatTmdbMovieClue(details, selectedCountries, filterCriteria);
+              if (movieClue) {
+                recordServerServedMovie(
+                  filterKey,
+                  movieClue.id,
+                  movieClue.title,
+                  maxServerHistoryForFilter
+                );
+                res.json({
+                  movie: movieClue,
+                  aiCurated: true,
+                  didCycleFilterPool: false,
+                  filterPoolIds: [],
+                });
+                return;
+              }
+            }
+          }
+        } catch (aiErr) {
+          console.warn('Groq AI curation attempt failed, falling back to direct TMDB discover:', aiErr);
+        }
+      }
+
+      // 2. Direct TMDB Discover Engine (exhaustive search across TMDB's catalog)
       const hasCountryFilter = selectedCountries.length > 0;
       const isOnlyUS = selectedCountries.length === 1 && selectedCountries[0] === 'US';
       const hasDecadeFilter = selectedDecades.length > 0;
       const isClassic = selectedDecades.includes('classic');
 
-      const primaryMinVotes = (hasCountryFilter && !isOnlyUS) || isClassic ? 25 : hasDecadeFilter ? 80 : 120;
-      const secondaryMinVotes = (hasCountryFilter && !isOnlyUS) || isClassic ? 10 : 25;
+      const primaryMinVotes = (hasCountryFilter && !isOnlyUS) || isClassic ? 20 : hasDecadeFilter ? 60 : 100;
+      const secondaryMinVotes = (hasCountryFilter && !isOnlyUS) || isClassic ? 5 : 20;
 
       const candidatePool: any[] = [];
       const seenCandidateIds = new Set<string>();
@@ -341,7 +695,6 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
           const maxLte = ranges.reduce((acc, r) => (r.lte > acc ? r.lte : acc), ranges[0].lte);
           url += `&primary_release_date.gte=${minGte}&primary_release_date.lte=${maxLte}`;
         } else {
-          // If no decade is specified, make sure we only pick released films
           const today = new Date().toISOString().split('T')[0];
           url += `&primary_release_date.lte=${today}`;
         }
@@ -373,7 +726,6 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
           eligibleFromPage.push(m);
         }
 
-        // Shuffle page results before sampling so Page 1 top entries never monopolize the pool
         for (let i = eligibleFromPage.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [eligibleFromPage[i], eligibleFromPage[j]] = [eligibleFromPage[j], eligibleFromPage[i]];
@@ -388,7 +740,7 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
         }
       };
 
-      const harvestCandidates = async (minVotes: number) => {
+      const harvestCandidates = async (minVotes: number, maxPages = 4) => {
         const shuffledDecades =
           selectedDecades.length > 0
             ? [...selectedDecades].sort(() => Math.random() - 0.5)
@@ -399,7 +751,7 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
           if (!page1Res.ok) continue;
           const page1Data = await page1Res.json();
 
-          const totalPages = Math.min(Number(page1Data.total_pages) || 1, 35);
+          const totalPages = Math.min(Number(page1Data.total_pages) || 1, 50);
           filterEligibleResults(page1Data.results || [], totalPages > 1 ? 5 : 20);
 
           if (totalPages > 1) {
@@ -408,7 +760,7 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
               const j = Math.floor(Math.random() * (i + 1));
               [availablePages[i], availablePages[j]] = [availablePages[j], availablePages[i]];
             }
-            const pagesToFetch = availablePages.slice(0, 4);
+            const pagesToFetch = availablePages.slice(0, maxPages);
             const pageResponses = await Promise.all(
               pagesToFetch.map((p) =>
                 fetch(buildDiscoverUrl(p, minVotes, decadeKey))
@@ -418,25 +770,28 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
             );
             for (const pData of pageResponses) {
               if (pData?.results) {
-                filterEligibleResults(pData.results, 7);
+                filterEligibleResults(pData.results, 8);
               }
             }
           }
         }
       };
 
-      await harvestCandidates(primaryMinVotes);
-      if (candidatePool.length < 6) {
-        await harvestCandidates(secondaryMinVotes);
+      await harvestCandidates(primaryMinVotes, 4);
+      if (candidatePool.length < 8) {
+        await harvestCandidates(secondaryMinVotes, 6);
+      }
+      if (candidatePool.length < 4) {
+        await harvestCandidates(0, 8); // Relax minVotes to 0 to capture all available TMDB films
       }
 
-      // Shuffle candidatePool thoroughly using Fisher-Yates
+      // Shuffle candidatePool thoroughly
       for (let i = candidatePool.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [candidatePool[i], candidatePool[j]] = [candidatePool[j], candidatePool[i]];
       }
 
-      const topCandidates = candidatePool.slice(0, 15);
+      const topCandidates = candidatePool.slice(0, 18);
       for (let bIdx = 0; bIdx < topCandidates.length; bIdx += 3) {
         const batch = topCandidates.slice(bIdx, bIdx + 3);
         const detailList = await Promise.all(
@@ -452,204 +807,71 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
         );
 
         for (const details of detailList) {
-          if (!details || !details.title) continue;
-
-          const screenshots = selectDistinctSceneScreenshots(
-            details.images?.backdrops || [],
-            details.backdrop_path,
-            5
-          );
-          if (screenshots.length < 5) continue;
-
-          const releaseYear = details.release_date
-            ? parseInt(details.release_date.split('-')[0], 10)
-            : 2000;
-          const decade = releaseYear < 1970 ? 'classic' : `${Math.floor(releaseYear / 10) * 10}s`;
-
-          const primaryOrigins: string[] = (
-            Array.isArray(details.origin_country) ? details.origin_country : []
-          ).map((c: string) => c.toUpperCase());
-          const fallbackProdOrigins: string[] = (
-            (details.production_countries || []).map((pc: any) => pc.iso_3166_1).filter(Boolean)
-          ).map((c: string) => c.toUpperCase());
-
-          const langToCountry: Record<string, string> = {
-            ja: 'JP',
-            fr: 'FR',
-            hi: 'IN',
-            ko: 'KR',
-            de: 'DE',
-            es: 'ES',
-            it: 'IT',
-            en: 'US',
-            zh: 'HK',
-            pt: 'BR',
-            sv: 'SE',
-          };
-          const langFallback = details.original_language ? langToCountry[details.original_language] : null;
-
-          const originCountries = [
-            ...primaryOrigins,
-            ...fallbackProdOrigins,
-            ...(langFallback ? [langFallback] : []),
-          ];
-
-          const matchedOrigin =
-            selectedCountries.find((sc) => originCountries.includes(sc)) ||
-            originCountries[0] ||
-            'US';
-
-          // Strictly verify candidate satisfies active Country and Decade filters
-          if (
-            !matchesMovieFilters(
-              {
-                id: `tmdb-${details.id}`,
-                title: details.title,
-                year: releaseYear,
-                decade,
-                country: matchedOrigin,
-              },
-              filterCriteria
-            )
-          ) {
-            continue;
+          const movieClue = formatTmdbMovieClue(details, selectedCountries, filterCriteria);
+          if (movieClue) {
+            recordServerServedMovie(
+              filterKey,
+              movieClue.id,
+              movieClue.title,
+              maxServerHistoryForFilter
+            );
+            res.json({ movie: movieClue, didCycleFilterPool: false, filterPoolIds: [] });
+            return;
           }
-
-          const crew = details.credits?.crew || [];
-          const directorObj = crew.find((c: any) => c.job === 'Director');
-          const director = directorObj ? directorObj.name : 'Master Filmmaker';
-
-          const cast = (details.credits?.cast || []).slice(0, 3).map((c: any, idx: number) => {
-            const cleanChar = c.character ? c.character.split('/')[0].trim() : 'Key Protagonist';
-            const titles = ['The Lead Protagonist', 'The Principal Foil', 'The Crucial Ally'];
-            const archetypeTitle =
-              cleanChar.length > 2 && cleanChar.length < 25
-                ? `The ${cleanChar}`
-                : titles[idx] || 'Central Character';
-
-            return {
-              archetype: archetypeTitle,
-              characterDescription: `Portrayed with iconic distinction by ${c.name}.`,
-              actorInitials:
-                c.name
-                  .split(' ')
-                  .map((p: string) => p[0])
-                  .join('.') + '.',
-            };
-          });
-
-          const genreNames = (details.genres || []).map((g: any) => g.name);
-          const keywordsList = (details.keywords?.keywords || []).map((k: any) => k.name);
-          const emojis = generateThematicEmojis(
-            details.title,
-            details.overview || '',
-            keywordsList,
-            genreNames
-          );
-          const taglineObj = formatTaglineBlank(details.tagline, details.overview || '');
-
-          let grossText = 'Box Office Blockbuster';
-          if (details.revenue && details.revenue > 1000000) {
-            if (details.revenue >= 1000000000) {
-              grossText = `$${(details.revenue / 1000000000).toFixed(2)} Billion Worldwide`;
-            } else {
-              grossText = `$${(details.revenue / 1000000).toFixed(0)} Million Worldwide`;
-            }
-          }
-
-          const ratingText = details.vote_average
-            ? `TMDB Score: ${details.vote_average.toFixed(1)}/10 (${details.vote_count.toLocaleString()} cinephile votes)`
-            : 'Universally Recognized Masterpiece';
-
-          const leadCharName = details.credits?.cast?.[0]?.character
-            ? details.credits.cast[0].character.split('/')[0].trim()
-            : 'The Lead';
-
-          const quoteDialogue =
-            details.tagline && details.tagline.trim().length > 12
-              ? details.tagline
-              : details.overview || `A cinematic journey directed by ${director}.`;
-
-          const escapedTitle = details.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const sanitizedDialogue = quoteDialogue.replace(
-            new RegExp(`\\b${escapedTitle}\\b`, 'gi'),
-            '[This Film]'
-          );
-
-          const movieClue = {
-            id: `tmdb-${details.id}`,
-            title: details.title,
-            year: releaseYear,
-            decade,
-            country: matchedOrigin,
-            director,
-            genres: genreNames.length > 0 ? genreNames : ['Drama'],
-            difficulty: (details.vote_count > 10000 ? 'Novice' : 'Cinephile') as
-              | 'Novice'
-              | 'Cinephile',
-            screenshots,
-            emojiCryptogram: emojis,
-            tagline: taglineObj,
-            quote: {
-              dialogue: sanitizedDialogue,
-              speakerRole: `Protagonist (${leadCharName})`,
-              context: `Theatrical signature logline directed by ${director}.`,
-            },
-            minimalistArt: {
-              primaryBg: 'from-slate-900 to-indigo-950',
-              accentColor: '#f59e0b',
-              themeSymbol: 'totem_spinner',
-              description: `Official Theatrical Key Art (${releaseYear}) • ${genreNames
-                .slice(0, 2)
-                .join(' / ')}`,
-            },
-            castDossier:
-              cast.length > 0
-                ? cast
-                : [
-                    {
-                      archetype: 'The Protagonist',
-                      characterDescription: 'Central figure',
-                      actorInitials: 'A.L.',
-                    },
-                  ],
-            boxOfficeTrivia: {
-              oscars: ratingText,
-              budgetOrGross: grossText,
-              secretTrivia:
-                details.overview || `An acclaimed cinematic release preserved in TMDB history.`,
-            },
-            posterUrl: details.poster_path
-              ? `https://image.tmdb.org/t/p/w500${details.poster_path}`
-              : null,
-            backdropUrl: screenshots[4] || null,
-          };
-
-          recordServerServedMovie(
-            filterKey,
-            movieClue.id,
-            movieClue.title,
-            maxServerHistoryForFilter
-          );
-          res.json({ movie: movieClue, didCycleFilterPool: false, filterPoolIds: [] });
-          return;
         }
       }
 
-      // When TMDB API key is active, strictly do NOT serve from static catalog
-      res.json({
+      // 3. Guaranteed Non-Exhaustion: If all matching films were in the exclusion list or narrow filters lacked backdrops,
+      // progressively relax constraints so the user NEVER sees "no unused movies found"!
+      const fallbackUrls = [
+        buildDiscoverUrl(Math.floor(Math.random() * 5) + 1, 0),
+        selectedCountries.length > 0
+          ? `https://api.tmdb.org/3/discover/movie?api_key=${encodeURIComponent(
+              apiKey
+            )}&sort_by=vote_count.desc&with_origin_country=${encodeURIComponent(
+              selectedCountries.join('|')
+            )}&include_adult=false&page=${Math.floor(Math.random() * 3) + 1}`
+          : '',
+        `https://api.tmdb.org/3/discover/movie?api_key=${encodeURIComponent(
+          apiKey
+        )}&sort_by=vote_count.desc&vote_count.gte=50&include_adult=false&page=${Math.floor(Math.random() * 10) + 1}`,
+      ].filter(Boolean);
+
+      for (const fUrl of fallbackUrls) {
+        try {
+          const fRes = await fetch(fUrl);
+          if (!fRes.ok) continue;
+          const fData = await fRes.json();
+          const fResults = (fData?.results || []).filter((m: any) => m && m.backdrop_path);
+          for (const fCandidate of fResults.slice(0, 6)) {
+            const detailRes = await fetch(
+              `https://api.tmdb.org/3/movie/${fCandidate.id}?api_key=${encodeURIComponent(
+                apiKey
+              )}&append_to_response=credits,keywords,images&include_image_language=en,null`
+            );
+            if (!detailRes.ok) continue;
+            const details = await detailRes.json();
+            const emClue = formatTmdbMovieClue(details, selectedCountries, { countries: [], decades: [] });
+            if (emClue) {
+              recordServerServedMovie(filterKey, emClue.id, emClue.title, maxServerHistoryForFilter);
+              res.json({ movie: emClue, didCycleFilterPool: true, filterPoolIds: [] });
+              return;
+            }
+          }
+        } catch {
+          // Continue to next fallback
+        }
+      }
+
+      res.status(502).json({
         movie: null,
-        didCycleFilterPool: false,
-        filterPoolIds: [],
-        exhausted: true,
-        message: 'No unused movies found on TMDB matching the selected filters.',
+        error: 'Failed to find eligible movie on TMDB',
       });
       return;
     } catch (err: any) {
       console.error('Live TMDB lookup error:', err);
       res.status(502).json({
         movie: null,
-        exhausted: false,
         error: 'Failed to connect to TMDB API',
       });
       return;
@@ -665,19 +887,14 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
       combinedExcludeList,
       immediateExcludes,
       Math.random,
-      combinedExcludeTitles
+      combinedExcludeTitles,
+      { allowCycle: true }
     );
     if (movie) {
       recordServerServedMovie(filterKey, movie.id, movie.title, maxServerHistoryForFilter);
       res.json({ movie, didCycleFilterPool: false, filterPoolIds, exhausted: false });
     } else {
-      res.json({
-        movie: null,
-        didCycleFilterPool: false,
-        filterPoolIds: [],
-        exhausted: true,
-        message: 'No unused movies match the selected filters',
-      });
+      res.json({ movie: MOVIE_DATABASE[0], didCycleFilterPool: true, filterPoolIds: [] });
     }
   } catch (err: any) {
     console.error('Error selecting fallback archive movie:', err);

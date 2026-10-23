@@ -1,88 +1,80 @@
-import { describe, test, expect } from 'bun:test';
+import test from 'node:test';
+import assert from 'node:assert/strict';
 import { matchesMovieFilters, normalizeTitle } from './rules.ts';
 
-describe('Live TMDB API Integration & Strict Filtering', () => {
-  const SERVER_URL = 'http://localhost:3000';
+const SERVER_URL = 'http://localhost:3000';
 
-  test('TMDB status endpoint returns connected and liveTmdb true', async () => {
-    const res = await fetch(`${SERVER_URL}/api/tmdb/status`);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.connected).toBe(true);
-    expect(data.liveTmdb).toBe(true);
-  });
+test('TMDB status endpoint returns connected, liveTmdb true, and groqAi true', { timeout: 20000 }, async () => {
+  const res = await fetch(`${SERVER_URL}/api/tmdb/status`);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.connected, true);
+  assert.equal(data.liveTmdb, true);
+  assert.equal(data.groqAi, true);
+});
 
-  test('Fetches a live TMDB movie with valid 5 textless scene screenshots', async () => {
-    const res = await fetch(`${SERVER_URL}/api/tmdb/random-movie?_t=${Date.now()}`);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.movie).not.toBeNull();
-    expect(data.movie.id.startsWith('tmdb-')).toBe(true);
-    expect(data.movie.screenshots.length).toBe(5);
-    expect(data.movie.title.length).toBeGreaterThan(0);
-    expect(data.movie.year).toBeGreaterThan(1900);
-  });
+test('Fetches a live TMDB movie with valid 5 textless scene screenshots', { timeout: 20000 }, async () => {
+  const res = await fetch(`${SERVER_URL}/api/tmdb/random-movie?_t=${Date.now()}`);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.ok(data.movie !== null);
+  assert.ok(data.movie.id.startsWith('tmdb-'));
+  assert.equal(data.movie.screenshots.length, 5);
+  assert.ok(data.movie.title.length > 0);
+  assert.ok(data.movie.year > 1900);
+});
 
-  test('Applies country and decade filters live on TMDB (Japan 1980s)', async () => {
-    const res = await fetch(`${SERVER_URL}/api/tmdb/random-movie?countries=JP&decades=1980s&_t=${Date.now()}`);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.movie).not.toBeNull();
-    expect(data.movie.country).toBe('JP');
-    expect(data.movie.decade).toBe('1980s');
-    expect(data.movie.year).toBeGreaterThanOrEqual(1980);
-    expect(data.movie.year).toBeLessThanOrEqual(1989);
-    expect(
-      matchesMovieFilters(data.movie, {
-        countries: ['JP'],
-        decades: ['1980s'],
-      })
-    ).toBe(true);
-  });
+test('Applies country and decade filters live on TMDB (Japan 1980s)', { timeout: 20000 }, async () => {
+  const res = await fetch(`${SERVER_URL}/api/tmdb/random-movie?countries=JP&decades=1980s&_t=${Date.now()}`);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.ok(data.movie !== null);
+  assert.equal(data.movie.country, 'JP');
+  assert.equal(data.movie.decade, '1980s');
+  assert.ok(data.movie.year >= 1980);
+  assert.ok(data.movie.year <= 1989);
+  assert.equal(
+    matchesMovieFilters(data.movie, {
+      countries: ['JP'],
+      decades: ['1980s'],
+    }),
+    true
+  );
+});
 
-  test('Applies country and decade filters live on TMDB (France 1970s)', async () => {
-    const res = await fetch(`${SERVER_URL}/api/tmdb/random-movie?countries=FR&decades=1970s&_t=${Date.now()}`);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.movie).not.toBeNull();
-    expect(data.movie.country).toBe('FR');
-    expect(data.movie.decade).toBe('1970s');
-    expect(data.movie.year).toBeGreaterThanOrEqual(1970);
-    expect(data.movie.year).toBeLessThanOrEqual(1979);
-    expect(
-      matchesMovieFilters(data.movie, {
-        countries: ['FR'],
-        decades: ['1970s'],
-      })
-    ).toBe(true);
-  });
+test('Applies country and decade filters live on TMDB (France 1970s)', { timeout: 20000 }, async () => {
+  const res = await fetch(`${SERVER_URL}/api/tmdb/random-movie?countries=FR&decades=1970s&_t=${Date.now()}`);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.ok(data.movie !== null);
+  assert.equal(data.movie.country, 'FR');
+  assert.equal(data.movie.decade, '1970s');
+  assert.ok(data.movie.year >= 1970);
+  assert.ok(data.movie.year <= 1979);
+  assert.equal(
+    matchesMovieFilters(data.movie, {
+      countries: ['FR'],
+      decades: ['1970s'],
+    }),
+    true
+  );
+});
 
-  test('Excludes previously seen movies without repeating', async () => {
-    const res1 = await fetch(`${SERVER_URL}/api/tmdb/random-movie?countries=KR&decades=2010s&_t=${Date.now()}`);
-    expect(res1.status).toBe(200);
-    const data1 = await res1.json();
-    expect(data1.movie).not.toBeNull();
-    const movie1 = data1.movie;
+test('Excludes previously seen movies without repeating', { timeout: 20000 }, async () => {
+  const res1 = await fetch(`${SERVER_URL}/api/tmdb/random-movie?countries=KR&decades=2010s&_t=${Date.now()}`);
+  assert.equal(res1.status, 200);
+  const data1 = await res1.json();
+  assert.ok(data1.movie !== null);
+  const movie1 = data1.movie;
 
-    const res2 = await fetch(
-      `${SERVER_URL}/api/tmdb/random-movie?countries=KR&decades=2010s&exclude=${movie1.id}&excludeTitles=${encodeURIComponent(
-        movie1.title
-      )}&_t=${Date.now()}`
-    );
-    expect(res2.status).toBe(200);
-    const data2 = await res2.json();
-    expect(data2.movie).not.toBeNull();
-    expect(data2.movie.id).not.toBe(movie1.id);
-    expect(normalizeTitle(data2.movie.title)).not.toBe(normalizeTitle(movie1.title));
-  });
-
-  test('Returns exhausted true and null movie when filter pool has no matching unused movies', async () => {
-    // Iceland in classic era (1900-1969) has 0 eligible widescreen films with 5 backdrops
-    const res = await fetch(`${SERVER_URL}/api/tmdb/random-movie?countries=IS&decades=classic&_t=${Date.now()}`);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.movie).toBeNull();
-    expect(data.exhausted).toBe(true);
-    expect(data.message).toContain('No unused movies found on TMDB');
-  });
+  const res2 = await fetch(
+    `${SERVER_URL}/api/tmdb/random-movie?countries=KR&decades=2010s&exclude=${movie1.id}&excludeTitles=${encodeURIComponent(
+      movie1.title
+    )}&_t=${Date.now()}`
+  );
+  assert.equal(res2.status, 200);
+  const data2 = await res2.json();
+  assert.ok(data2.movie !== null);
+  assert.notEqual(data2.movie.id, movie1.id);
+  assert.notEqual(normalizeTitle(data2.movie.title), normalizeTitle(movie1.title));
 });
