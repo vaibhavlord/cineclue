@@ -24,11 +24,11 @@ app.use(express.json());
 app.get('/api/tmdb/status', (req: Request, res: Response) => {
   const hasKey = Boolean(process.env.TMDB_API_KEY && process.env.TMDB_API_KEY.trim().length > 0);
   res.json({
-    connected: true,
+    connected: hasKey,
     liveTmdb: hasKey,
     archiveCount: MOVIE_DATABASE.length,
     message: hasKey
-      ? 'TMDB API is connected successfully with live movie database access.'
+      ? 'TMDB API is connected successfully with live movie database access. A fresh random film is selected live from TMDB on every round according to active filters.'
       : `Built-in Global Cinema Archive active (${MOVIE_DATABASE.length} films across 14 countries & 7 eras).`,
   });
 });
@@ -45,7 +45,7 @@ app.get('/api/tmdb/search', async (req: Request, res: Response) => {
   if (apiKey && apiKey.trim().length > 0) {
     try {
       const tmdbRes = await fetch(
-        `https://api.themoviedb.org/3/search/movie?api_key=${encodeURIComponent(apiKey)}&query=${encodeURIComponent(
+        `https://api.tmdb.org/3/search/movie?api_key=${encodeURIComponent(apiKey)}&query=${encodeURIComponent(
           query
         )}&include_adult=false&language=en-US&page=1`
       );
@@ -215,7 +215,7 @@ function formatTaglineBlank(rawTagline: string, overview: string) {
 }
 
 const DECADE_DATE_RANGES: Record<string, { gte: string; lte: string; startYear: number; endYear: number }> = {
-  classic: { gte: '1920-01-01', lte: '1969-12-31', startYear: 1920, endYear: 1969 },
+  classic: { gte: '1900-01-01', lte: '1969-12-31', startYear: 1900, endYear: 1969 },
   '1970s': { gte: '1970-01-01', lte: '1979-12-31', startYear: 1970, endYear: 1979 },
   '1980s': { gte: '1980-01-01', lte: '1989-12-31', startYear: 1980, endYear: 1989 },
   '1990s': { gte: '1990-01-01', lte: '1999-12-31', startYear: 1990, endYear: 1999 },
@@ -228,7 +228,7 @@ const DECADE_DATE_RANGES: Record<string, { gte: string; lte: string; startYear: 
 const recentServedIdsByFilter = new Map<string, string[]>();
 const recentServedTitlesByFilter = new Map<string, string[]>();
 
-function recordServerServedMovie(filterKey: string, movieId: string, movieTitle: string, maxKeep: number) {
+function recordServerServedMovie(filterKey: string, movieId: string, movieTitle: string, maxKeep = 60) {
   const cleanId = movieId.trim();
   const idList = (recentServedIdsByFilter.get(filterKey) || []).filter(
     (id) => id !== cleanId && id.replace(/^tmdb-/, '') !== cleanId.replace(/^tmdb-/, '')
@@ -246,7 +246,7 @@ function recordServerServedMovie(filterKey: string, movieId: string, movieTitle:
   }
 }
 
-// Proxy TMDB Random Iconic Mystery Film with Guaranteed Multi-Country & Multi-Decade Archive Fallback
+// Proxy TMDB Random Iconic Mystery Film with Live TMDB API Querying on Every Request
 app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -282,15 +282,7 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
   };
 
   const filterKey = `${[...selectedCountries].sort().join(',')}|${[...selectedDecades].sort().join(',')}`;
-
-  // Determine how many matching films exist in our local archive for this filter
-  const archiveMatchingCount = MOVIE_DATABASE.filter((m) =>
-    matchesMovieFilters(m, filterCriteria)
-  ).length;
-  const maxServerHistoryForFilter = Math.max(
-    1,
-    Math.min(40, Math.floor((archiveMatchingCount - 1) * 0.75) || 20)
-  );
+  const maxServerHistoryForFilter = 60;
 
   const serverRecentIds = (recentServedIdsByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
   const serverRecentTitles = (recentServedTitlesByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
@@ -322,14 +314,17 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
     try {
       const hasCountryFilter = selectedCountries.length > 0;
       const isOnlyUS = selectedCountries.length === 1 && selectedCountries[0] === 'US';
-      const primaryMinVotes = hasCountryFilter && !isOnlyUS ? 80 : selectedDecades.length > 0 ? 250 : 600;
-      const secondaryMinVotes = hasCountryFilter && !isOnlyUS ? 12 : 80;
+      const hasDecadeFilter = selectedDecades.length > 0;
+      const isClassic = selectedDecades.includes('classic');
+
+      const primaryMinVotes = (hasCountryFilter && !isOnlyUS) || isClassic ? 25 : hasDecadeFilter ? 80 : 120;
+      const secondaryMinVotes = (hasCountryFilter && !isOnlyUS) || isClassic ? 10 : 25;
 
       const candidatePool: any[] = [];
       const seenCandidateIds = new Set<string>();
 
       const buildDiscoverUrl = (page: number, minVotes: number, decadeKey?: string) => {
-        let url = `https://api.themoviedb.org/3/discover/movie?api_key=${encodeURIComponent(
+        let url = `https://api.tmdb.org/3/discover/movie?api_key=${encodeURIComponent(
           apiKey
         )}&sort_by=vote_count.desc&vote_count.gte=${minVotes}&include_adult=false&language=en-US&page=${page}`;
 
@@ -345,6 +340,10 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
           const minGte = ranges.reduce((acc, r) => (r.gte < acc ? r.gte : acc), ranges[0].gte);
           const maxLte = ranges.reduce((acc, r) => (r.lte > acc ? r.lte : acc), ranges[0].lte);
           url += `&primary_release_date.gte=${minGte}&primary_release_date.lte=${maxLte}`;
+        } else {
+          // If no decade is specified, make sure we only pick released films
+          const today = new Date().toISOString().split('T')[0];
+          url += `&primary_release_date.lte=${today}`;
         }
 
         return url;
@@ -395,14 +394,13 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
             ? [...selectedDecades].sort(() => Math.random() - 0.5)
             : [undefined];
 
-        for (const decadeKey of shuffledDecades.slice(0, 2)) {
+        for (const decadeKey of shuffledDecades.slice(0, 3)) {
           const page1Res = await fetch(buildDiscoverUrl(1, minVotes, decadeKey));
           if (!page1Res.ok) continue;
           const page1Data = await page1Res.json();
 
-          const totalPages = Math.min(Number(page1Data.total_pages) || 1, 25);
-          // Sample at most 4 random eligible films from Page 1 if more pages exist
-          filterEligibleResults(page1Data.results || [], totalPages > 1 ? 4 : 20);
+          const totalPages = Math.min(Number(page1Data.total_pages) || 1, 35);
+          filterEligibleResults(page1Data.results || [], totalPages > 1 ? 5 : 20);
 
           if (totalPages > 1) {
             const availablePages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
@@ -410,7 +408,7 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
               const j = Math.floor(Math.random() * (i + 1));
               [availablePages[i], availablePages[j]] = [availablePages[j], availablePages[i]];
             }
-            const pagesToFetch = availablePages.slice(0, 3);
+            const pagesToFetch = availablePages.slice(0, 4);
             const pageResponses = await Promise.all(
               pagesToFetch.map((p) =>
                 fetch(buildDiscoverUrl(p, minVotes, decadeKey))
@@ -438,15 +436,15 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
         [candidatePool[i], candidatePool[j]] = [candidatePool[j], candidatePool[i]];
       }
 
-      const topCandidates = candidatePool.slice(0, 9);
+      const topCandidates = candidatePool.slice(0, 15);
       for (let bIdx = 0; bIdx < topCandidates.length; bIdx += 3) {
         const batch = topCandidates.slice(bIdx, bIdx + 3);
         const detailList = await Promise.all(
           batch.map((candidate) =>
             fetch(
-              `https://api.themoviedb.org/3/movie/${candidate.id}?api_key=${encodeURIComponent(
+              `https://api.tmdb.org/3/movie/${candidate.id}?api_key=${encodeURIComponent(
                 apiKey
-              )}&append_to_response=credits,keywords,images&include_image_language=null`
+              )}&append_to_response=credits,keywords,images&include_image_language=en,null`
             )
               .then((r) => (r.ok ? r.json() : null))
               .catch(() => null)
@@ -475,7 +473,26 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
             (details.production_countries || []).map((pc: any) => pc.iso_3166_1).filter(Boolean)
           ).map((c: string) => c.toUpperCase());
 
-          const originCountries = primaryOrigins.length > 0 ? primaryOrigins : fallbackProdOrigins;
+          const langToCountry: Record<string, string> = {
+            ja: 'JP',
+            fr: 'FR',
+            hi: 'IN',
+            ko: 'KR',
+            de: 'DE',
+            es: 'ES',
+            it: 'IT',
+            en: 'US',
+            zh: 'HK',
+            pt: 'BR',
+            sv: 'SE',
+          };
+          const langFallback = details.original_language ? langToCountry[details.original_language] : null;
+
+          const originCountries = [
+            ...primaryOrigins,
+            ...fallbackProdOrigins,
+            ...(langFallback ? [langFallback] : []),
+          ];
 
           const matchedOrigin =
             selectedCountries.find((sc) => originCountries.includes(sc)) ||
@@ -618,15 +635,31 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
           return;
         }
       }
+
+      // When TMDB API key is active, strictly do NOT serve from static catalog
+      res.json({
+        movie: null,
+        didCycleFilterPool: false,
+        filterPoolIds: [],
+        exhausted: true,
+        message: 'No unused movies found on TMDB matching the selected filters.',
+      });
+      return;
     } catch (err: any) {
-      console.error('Live TMDB lookup failed, serving from built-in archive:', err);
+      console.error('Live TMDB lookup error:', err);
+      res.status(502).json({
+        movie: null,
+        exhausted: false,
+        error: 'Failed to connect to TMDB API',
+      });
+      return;
     }
   }
 
-  // Built-in Multi-Country & Multi-Decade Archive Fallback (ensures 100% uptime across all deployed devices)
+  // Built-in Multi-Country & Multi-Decade Archive Fallback (used ONLY if TMDB_API_KEY is not configured)
   try {
     const immediateExcludes = combinedExcludeList.slice(-8);
-    const { movie, didCycleFilterPool, filterPoolIds, exhausted } = selectNonRepeatingMovie(
+    const { movie, didCycleFilterPool, filterPoolIds } = selectNonRepeatingMovie(
       MOVIE_DATABASE,
       filterCriteria,
       combinedExcludeList,

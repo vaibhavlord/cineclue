@@ -335,9 +335,11 @@ export async function fetchRandomTmdbMovie(
         );
         return data.movie;
       }
+      // When live TMDB reports exhausted or no unused movie matches active filters, return null
+      return null;
     }
   } catch (err) {
-    console.warn('Using local multi-country cinema archive:', err);
+    console.warn('Live TMDB lookup error:', err);
   }
 
   // 2. Fallback to curated & global multi-country archive strictly respecting active filters and exclusions

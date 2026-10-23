@@ -137,6 +137,13 @@ export default function App() {
   const sessionPlayedIds = useRef<Set<string>>(new Set());
   const sessionPlayedTitles = useRef<Set<string>>(new Set());
 
+  // Prefetch first live TMDB movie immediately on mount
+  useEffect(() => {
+    const excludeList = Array.from(sessionPlayedIds.current);
+    const excludeTitles = Array.from(sessionPlayedTitles.current);
+    prefetchNextTmdbMovie(excludeList, filtersRef.current, excludeTitles);
+  }, []);
+
   const recordSessionMovie = useCallback((movieOrId: Movie | string, maybeTitle?: string) => {
     const id = typeof movieOrId === 'string' ? movieOrId : movieOrId?.id;
     const title = typeof movieOrId === 'string' ? maybeTitle : movieOrId?.title;
