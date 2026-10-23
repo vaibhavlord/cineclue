@@ -523,7 +523,7 @@ function createLocalFallbackRound(
   );
 
   if (!movie) return null;
-  const fallback = movie
+  const fallback = movie;
 
   const roundId = `local-${fallback.id}-${Date.now()}`;
   localActiveRounds.set(roundId, {
