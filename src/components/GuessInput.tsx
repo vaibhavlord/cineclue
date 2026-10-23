@@ -1,21 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { POPULAR_TITLES_CATALOG } from '../data/movies';
 import { GuessRecord, Movie } from '../types/movie';
-import { Search, Check, X, Flag } from 'lucide-react';
+import { Search, Check, X, Flag, Film } from 'lucide-react';
 import { playProjectorClick, playClueRevealSound } from '../utils/audio';
 
 interface GuessInputProps {
-  movie: Movie;
+  movie?: Movie | null;
   guesses: GuessRecord[];
   maxGuesses: number;
   onMakeGuess: (title: string) => void;
   onGiveUp: () => void;
   isGameOver: boolean;
-  unlockedLetters: Set<string>;
+  unlockedLetters?: Set<string>;
   revealedTiers: number;
   onRevealNextTier: () => void;
-  onUnlockLetter: () => void;
-  availableLetterCount: number;
+  onUnlockLetter?: () => void;
+  availableLetterCount?: number;
+  isSubmitting?: boolean;
+  feedbackMessage?: string | null;
 }
 
 export const GuessInput: React.FC<GuessInputProps> = ({
@@ -29,7 +31,9 @@ export const GuessInput: React.FC<GuessInputProps> = ({
   revealedTiers,
   onRevealNextTier,
   onUnlockLetter,
-  availableLetterCount,
+  availableLetterCount = 0,
+  isSubmitting = false,
+  feedbackMessage = null,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isOpenDropdown, setIsOpenDropdown] = useState(false);
@@ -111,7 +115,7 @@ export const GuessInput: React.FC<GuessInputProps> = ({
 
   const handleSubmit = (titleToSubmit?: string) => {
     const finalTitle = titleToSubmit || searchTerm;
-    if (!finalTitle.trim() || isGameOver) return;
+    if (!finalTitle.trim() || isGameOver || isSubmitting) return;
     playProjectorClick();
     onMakeGuess(finalTitle.trim());
     setSearchTerm('');
@@ -146,10 +150,7 @@ export const GuessInput: React.FC<GuessInputProps> = ({
     }
   };
 
-  const hasTypedGuess = Boolean(searchTerm.trim()) && !isGameOver;
-
-  // Render character slots for movie.title
-  const titleCharacters = movie.title.split('');
+  const hasTypedGuess = Boolean(searchTerm.trim()) && !isGameOver && !isSubmitting;
 
   return (
     <div className="w-full h-full rounded-[20px] bg-[#1A1A19] border border-white/[0.08] p-6 sm:p-7 flex flex-col select-none">
@@ -164,50 +165,46 @@ export const GuessInput: React.FC<GuessInputProps> = ({
         </h2>
 
         <p className="text-[14px] text-[#9A948A] mt-2">
-          One title. Five chances. Make them count.
+          One title. Five clues. Make your guess.
         </p>
       </div>
 
-      {/* Movie Title Letter Blanks Row */}
-      <div
-        className="mt-6 mb-3 flex flex-wrap items-end gap-x-2 gap-y-2.5 min-h-[24px]"
-        aria-label="Movie title letter blanks"
-      >
-        {titleCharacters.map((char, idx) => {
-          const upper = char.toUpperCase();
-          if (char === ' ') {
-            return <span key={idx} className="inline-block w-3" />;
-          }
-          const isAlphaNum = /[A-Z0-9]/.test(upper);
-          if (!isAlphaNum) {
-            return (
-              <span
-                key={idx}
-                className="font-mono-code text-xs text-[#8E8A82] leading-none pb-0.5"
-              >
-                {char}
-              </span>
-            );
-          }
-          const isRevealed = isGameOver || unlockedLetters.has(upper);
-          return isRevealed ? (
-            <span
-              key={idx}
-              className="font-mono-code text-[13px] font-bold text-[#FDF5E1] border-b-2 border-[#EC5A49] min-w-[11px] text-center leading-none pb-0.5"
-            >
-              {upper}
+      {/* Clue Progress Badge / Mystery Status */}
+      {isGameOver && movie?.title ? (
+        <div className="mt-5 mb-4 p-3.5 rounded-xl bg-[#20201F] border border-white/[0.1] text-center">
+          <div className="text-[11px] font-mono-code uppercase text-[#EC5A49] tracking-wider mb-0.5">
+            REVEALED FILM
+          </div>
+          <div className="font-cinema text-2xl text-[#FDF5E1] tracking-wide">
+            {movie.title} ({movie.year})
+          </div>
+        </div>
+      ) : (
+        <div className="mt-5 mb-4 p-3 rounded-xl bg-[#141413] border border-white/[0.08] flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-[#EC5A49] animate-pulse" />
+            <span className="font-mono-code text-[12px] text-[#E6DFD3] tracking-wider uppercase font-semibold">
+              CLUE {revealedTiers} OF {maxGuesses} REVEALED
             </span>
-          ) : (
-            <span
-              key={idx}
-              className="inline-block w-[11px] h-[2px] bg-[#9A948A] rounded-full"
-            />
-          );
-        })}
-      </div>
+          </div>
+          <span className="font-mono-code text-[11px] text-[#8E8A82] tracking-wider uppercase">
+            {maxGuesses - revealedTiers > 0
+              ? `${maxGuesses - revealedTiers} REMAINING`
+              : 'FINAL CLUE'}
+          </span>
+        </div>
+      )}
+
+      {/* Feedback Message Banner */}
+      {feedbackMessage && (
+        <div className="mb-3.5 px-3.5 py-2.5 rounded-xl bg-[#2B1B18] border border-[#EC5A49]/40 text-xs text-[#FDF5E1] flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#EC5A49] shrink-0" />
+          <span className="font-medium">{feedbackMessage}</span>
+        </div>
+      )}
 
       {/* 5 Guesses Progress Bars & Counter Row */}
-      <div className="flex items-center justify-between mt-1.5 mb-5">
+      <div className="flex items-center justify-between mt-1 mb-5">
         <div className="flex items-center gap-1.5">
           {Array.from({ length: maxGuesses }).map((_, idx) => {
             const isUsed = idx < guesses.length;
@@ -254,30 +251,36 @@ export const GuessInput: React.FC<GuessInputProps> = ({
           <button
             type="button"
             onClick={() => handleSubmit()}
-            disabled={!hasTypedGuess}
+            disabled={!hasTypedGuess || isSubmitting}
             className={`h-[50px] px-5 rounded-xl flex items-center justify-center gap-2 transition-all shrink-0 ${
-              hasTypedGuess
+              hasTypedGuess && !isSubmitting
                 ? 'bg-[#EC5A49] hover:bg-[#F26655] text-[#141413] cursor-pointer'
                 : 'bg-[#30302E] text-[#7A756E] cursor-not-allowed'
             }`}
             aria-label="Submit movie guess"
           >
-            <span className="font-cinema text-[22px] tracking-[0.04em] leading-none">
-              GUESS
-            </span>
-            <svg
-              viewBox="0 0 14 14"
-              className="w-3.5 h-3.5 shrink-0"
-              fill="none"
-            >
-              <path
-                d="M11 3V7.5C11 8.32843 10.3284 9 9.5 9H3M3 9L5.5 6.5M3 9L5.5 11.5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            {isSubmitting ? (
+              <div className="w-5 h-5 border-2 border-[#141413] border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <>
+                <span className="font-cinema text-[22px] tracking-[0.04em] leading-none">
+                  GUESS
+                </span>
+                <svg
+                  viewBox="0 0 14 14"
+                  className="w-3.5 h-3.5 shrink-0"
+                  fill="none"
+                >
+                  <path
+                    d="M11 3V7.5C11 8.32843 10.3284 9 9.5 9H3M3 9L5.5 6.5M3 9L5.5 11.5"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </>
+            )}
           </button>
         </div>
 
@@ -405,7 +408,7 @@ export const GuessInput: React.FC<GuessInputProps> = ({
           </span>
         </button>
 
-        {/* Clue Button 2: Next Scene (-200 pts ->) */}
+        {/* Clue Button: Reveal Next Clue */}
         {revealedTiers < 5 ? (
           <button
             type="button"
@@ -413,39 +416,19 @@ export const GuessInput: React.FC<GuessInputProps> = ({
               playClueRevealSound();
               onRevealNextTier();
             }}
-            disabled={isGameOver}
-            aria-label={`Reveal next screenshot: Scene ${revealedTiers + 1}`}
+            disabled={isGameOver || isSubmitting}
+            aria-label={`Reveal next clue: Scene ${revealedTiers + 1}`}
             className="w-full h-[54px] rounded-xl bg-[#2B1B18] hover:bg-[#35211D] border border-[#EC5A49]/85 px-4 flex items-center justify-between mt-3 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
           >
             <div className="flex items-center">
-              <svg
-                viewBox="0 0 18 18"
-                className="w-4 h-4 text-[#EC5A49] shrink-0"
-                fill="none"
-              >
-                <rect
-                  x="2"
-                  y="2.5"
-                  width="14"
-                  height="13"
-                  rx="2"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                />
-                <path
-                  d="M5.5 2.5V15.5M12.5 2.5V15.5M2 6.5H5.5M12.5 6.5H16M2 11.5H5.5M12.5 11.5H16"
-                  stroke="currentColor"
-                  strokeWidth="1.4"
-                  strokeLinecap="round"
-                />
-              </svg>
+              <Film className="w-4 h-4 text-[#EC5A49] shrink-0" />
               <span className="text-[15px] font-semibold text-[#EC5A49] ml-3">
-                Next Scene
+                Reveal Next Clue
               </span>
             </div>
 
             <span className="font-mono-code text-[12px] text-[#EC5A49] flex items-center gap-2">
-              <span>-200 pts</span>
+              <span>{5 - revealedTiers} remaining</span>
               <span>&rarr;</span>
             </span>
           </button>
@@ -453,58 +436,38 @@ export const GuessInput: React.FC<GuessInputProps> = ({
           <button
             type="button"
             onClick={onGiveUp}
-            disabled={isGameOver}
-            aria-label="Reveal movie name after all 5 scenes"
+            disabled={isGameOver || isSubmitting}
+            aria-label="Reveal movie answer"
             className="w-full h-[54px] rounded-xl bg-[#2B1B18] hover:bg-[#35211D] border border-[#EC5A49]/85 px-4 flex items-center justify-between mt-3 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
           >
             <div className="flex items-center">
-              <svg
-                viewBox="0 0 18 18"
-                className="w-4 h-4 text-[#EC5A49] shrink-0"
-                fill="none"
-              >
-                <rect
-                  x="2"
-                  y="2.5"
-                  width="14"
-                  height="13"
-                  rx="2"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                />
-                <path
-                  d="M5.5 2.5V15.5M12.5 2.5V15.5M2 6.5H5.5M12.5 6.5H16M2 11.5H5.5M12.5 11.5H16"
-                  stroke="currentColor"
-                  strokeWidth="1.4"
-                  strokeLinecap="round"
-                />
-              </svg>
+              <Film className="w-4 h-4 text-[#EC5A49] shrink-0" />
               <span className="text-[15px] font-semibold text-[#EC5A49] ml-3">
                 Reveal Answer
               </span>
             </div>
 
             <span className="font-mono-code text-[12px] text-[#EC5A49] flex items-center gap-2">
-              <span>All 5 Scenes</span>
+              <span>All 5 Clues</span>
               <span>&rarr;</span>
             </span>
           </button>
         )}
       </div>
 
-      {/* Bottom Give Up Row */}
+      {/* Bottom Skip Movie Row */}
       <div className="mt-5 pt-1 flex items-center justify-between">
-        <span className="text-[13px] text-[#6E6A63]">Not your scene?</span>
+        <span className="text-[13px] text-[#6E6A63]">Need a fresh film?</span>
 
         <button
           type="button"
           onClick={onGiveUp}
-          disabled={isGameOver}
+          disabled={isGameOver || isSubmitting}
           className="text-[13px] font-medium text-[#9A948A] hover:text-[#EC5A49] flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
-          aria-label="Give up and reveal movie"
+          aria-label="Skip movie and reveal answer"
         >
           <Flag className="w-3.5 h-3.5" />
-          <span>Give Up</span>
+          <span>Skip Movie</span>
         </button>
       </div>
     </div>

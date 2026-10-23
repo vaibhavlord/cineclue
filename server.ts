@@ -7,6 +7,10 @@ import {
   normalizeTitle,
   selectDistinctSceneScreenshots,
   selectNonRepeatingMovie,
+  calculateScore,
+  checkTitleMatch,
+  compareReleaseYear,
+  findMatchingGenres,
 } from './src/game/rules.ts';
 import { MOVIE_DATABASE, POPULAR_TITLES_CATALOG } from './src/data/movies.ts';
 
@@ -900,6 +904,699 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
     console.error('Error selecting fallback archive movie:', err);
     res.status(500).json({ error: 'Failed to generate movie challenge' });
   }
+});
+
+// ============================================================================
+// COMPLETE RANDOM MOVIE CLUE SYSTEM (SECURE SERVER-SIDE ROUND STATE)
+// ============================================================================
+
+interface SecretRoundState {
+  roundId: string;
+  movieId: number | string;
+  title: string;
+  year: number;
+  decade: string;
+  country: string;
+  director: string;
+  overview: string;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+  genres: string[];
+  clueImages: string[]; // exactly 5 distinct w780 URLs
+  revealedClues: number; // 1 to 5
+  maxClues: number;
+  guessesCount: number;
+  maxGuesses: number;
+  solved: boolean;
+  forfeited: boolean;
+  pointsEarned: number;
+  guesses: Array<{
+    title: string;
+    isCorrect: boolean;
+    guessNumber: number;
+    year?: number;
+    yearRelation?: 'exact' | 'earlier' | 'later';
+    decadeMatch?: boolean;
+    genreMatches?: string[];
+  }>;
+  createdAt: number;
+}
+
+const activeRounds = new Map<string, SecretRoundState>();
+
+// Periodic cleanup of stale rounds (> 2 hours old) to prevent memory leaks
+setInterval(() => {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, r] of activeRounds.entries()) {
+    if (r.createdAt < cutoff) {
+      activeRounds.delete(id);
+    }
+  }
+}, 15 * 60 * 1000);
+
+// In-memory rate limiting to protect TMDB API quota
+const gameRateLimits = new Map<string, { count: number; resetAt: number }>();
+function gameRateLimitMiddleware(req: Request, res: Response, next: () => void) {
+  const ip =
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+    req.socket.remoteAddress ||
+    'anonymous';
+  const now = Date.now();
+  const entry = gameRateLimits.get(ip);
+  if (!entry || now > entry.resetAt) {
+    gameRateLimits.set(ip, { count: 1, resetAt: now + 60000 });
+    return next();
+  }
+  if (entry.count >= 100) {
+    res.status(429).json({ error: 'Too many requests. Please slow down.' });
+    return;
+  }
+  entry.count++;
+  next();
+}
+
+/**
+ * Discovers a candidate movie from TMDB /3/discover/movie and fetches 5 distinct
+ * textless backdrops from /3/movie/{id}/images with retry limit.
+ */
+async function fetchRandomTmdbRoundMovie(
+  selectedCountries: string[],
+  selectedDecades: string[],
+  excludeIds: Set<string>,
+  excludeTitles: Set<string>,
+  apiKey: string,
+  maxRetries = 5
+): Promise<{
+  movieId: number | string;
+  title: string;
+  year: number;
+  decade: string;
+  country: string;
+  director: string;
+  overview: string;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+  genres: string[];
+  clueImages: string[];
+} | null> {
+  const hasCountryFilter = selectedCountries.length > 0;
+  const isOnlyUS = selectedCountries.length === 1 && selectedCountries[0] === 'US';
+  const hasDecadeFilter = selectedDecades.length > 0;
+  const isClassic = selectedDecades.includes('classic');
+
+  // Min votes threshold ensures recognizable movies with valid backdrop coverage
+  const primaryMinVotes = (hasCountryFilter && !isOnlyUS) || isClassic ? 15 : hasDecadeFilter ? 30 : 50;
+  const secondaryMinVotes = (hasCountryFilter && !isOnlyUS) || isClassic ? 5 : 15;
+
+  const buildDiscoverUrl = (page: number, minVotes: number, sortBy = 'popularity.desc') => {
+    let url = `https://api.tmdb.org/3/discover/movie?api_key=${encodeURIComponent(
+      apiKey
+    )}&include_adult=false&include_video=false&language=en-US&sort_by=${sortBy}&vote_count.gte=${minVotes}&page=${page}`;
+
+    if (selectedCountries.length > 0) {
+      url += `&with_origin_country=${encodeURIComponent(selectedCountries.join('|'))}`;
+    }
+
+    if (selectedDecades.length > 0) {
+      const ranges = selectedDecades.map((k) => DECADE_DATE_RANGES[k]).filter(Boolean);
+      const minGte = ranges.reduce((acc, r) => (r.gte < acc ? r.gte : acc), ranges[0].gte);
+      const maxLte = ranges.reduce((acc, r) => (r.lte > acc ? r.lte : acc), ranges[0].lte);
+      url += `&primary_release_date.gte=${minGte}&primary_release_date.lte=${maxLte}`;
+    } else {
+      const today = new Date().toISOString().split('T')[0];
+      url += `&primary_release_date.lte=${today}`;
+    }
+
+    return url;
+  };
+
+  const extractFiveBackdrops = (backdrops: any[], primaryBackdrop?: string | null): string[] => {
+    if (!Array.isArray(backdrops) || backdrops.length === 0) return [];
+
+    // Filter textless widescreen backdrops
+    const seenPaths = new Set<string>();
+    const textlessBackdrops: any[] = [];
+
+    for (const b of backdrops) {
+      if (!b || typeof b.file_path !== 'string' || !b.file_path.trim().startsWith('/')) continue;
+      // Exclude backdrops containing titles or localized text
+      if (b.iso_639_1 !== null && b.iso_639_1 !== undefined && String(b.iso_639_1).trim() !== '') {
+        continue;
+      }
+      if (seenPaths.has(b.file_path)) continue;
+      seenPaths.add(b.file_path);
+      textlessBackdrops.push(b);
+    }
+
+    // Require at least 5 distinct suitable backdrops
+    if (textlessBackdrops.length < 5) return [];
+
+    // Use our advanced scene partition selector from rules.ts
+    const selected = selectDistinctSceneScreenshots(textlessBackdrops, primaryBackdrop, 5, 'w780');
+    if (selected.length === 5 && new Set(selected).size === 5) {
+      return selected;
+    }
+
+    // Secondary selection: pick 5 distinct textless backdrops avoiding primary promo banner
+    const pool = primaryBackdrop
+      ? textlessBackdrops.filter((b) => b.file_path !== primaryBackdrop)
+      : textlessBackdrops;
+    const finalPool = pool.length >= 5 ? pool : textlessBackdrops;
+
+    const shuffled = [...finalPool].sort(() => Math.random() - 0.5);
+    const chosen = shuffled.slice(0, 5).map((b) => `https://image.tmdb.org/t/p/w780${b.file_path}`);
+    return chosen.length === 5 && new Set(chosen).size === 5 ? chosen : [];
+  };
+
+  const candidatePool: any[] = [];
+  const harvestCandidates = async (minVotes: number) => {
+    try {
+      const sortOptions = ['popularity.desc', 'vote_count.desc'];
+      const chosenSort = sortOptions[Math.floor(Math.random() * sortOptions.length)];
+
+      const page1Res = await fetch(buildDiscoverUrl(1, minVotes, chosenSort));
+      if (!page1Res.ok) return;
+      const page1Data = await page1Res.json();
+      const totalPages = Math.min(Number(page1Data.total_pages) || 1, 25);
+
+      // Randomly select pages to avoid always choosing the most popular movies
+      const pagesToFetch = [1];
+      if (totalPages > 1) {
+        const randA = Math.floor(Math.random() * (totalPages - 1)) + 2;
+        pagesToFetch.push(randA);
+        if (totalPages > 3) {
+          const randB = Math.floor(Math.random() * (totalPages - 1)) + 2;
+          if (randB !== randA) pagesToFetch.push(randB);
+        }
+      }
+
+      const pageResponses = await Promise.all(
+        pagesToFetch.map((p) =>
+          fetch(buildDiscoverUrl(p, minVotes, chosenSort))
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)
+        )
+      );
+
+      for (const pData of pageResponses) {
+        for (const m of pData?.results || []) {
+          if (!m || !m.id || !m.title) continue;
+          if (m.adult === true) continue;
+          if (!m.backdrop_path) continue;
+          if (!m.release_date || typeof m.release_date !== 'string' || m.release_date.length < 4) continue;
+          const releaseYear = parseInt(m.release_date.split('-')[0], 10);
+          if (isNaN(releaseYear) || releaseYear < 1900 || releaseYear > new Date().getFullYear() + 1) continue;
+
+          const idStr = String(m.id);
+          const normTitle = normalizeTitle(m.title);
+
+          if (
+            excludeIds.has(idStr) ||
+            excludeIds.has(`tmdb-${idStr}`) ||
+            (normTitle && excludeTitles.has(normTitle))
+          ) {
+            continue;
+          }
+
+          if (!candidatePool.some((c) => c.id === m.id)) {
+            candidatePool.push(m);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Error harvesting discover candidates:', err);
+    }
+  };
+
+  await harvestCandidates(primaryMinVotes);
+  if (candidatePool.length < 6) {
+    await harvestCandidates(secondaryMinVotes);
+  }
+  if (candidatePool.length < 3) {
+    await harvestCandidates(0);
+  }
+
+  // Shuffle candidates thoroughly
+  for (let i = candidatePool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidatePool[i], candidatePool[j]] = [candidatePool[j], candidatePool[i]];
+  }
+
+  let attempts = 0;
+  for (const candidate of candidatePool) {
+    if (attempts >= maxRetries + 10) break;
+    attempts++;
+
+    try {
+      const [imagesRes, detailsRes] = await Promise.all([
+        fetch(
+          `https://api.tmdb.org/3/movie/${candidate.id}/images?api_key=${encodeURIComponent(
+            apiKey
+          )}&include_image_language=en,null`
+        ),
+        fetch(
+          `https://api.tmdb.org/3/movie/${candidate.id}?api_key=${encodeURIComponent(
+            apiKey
+          )}&append_to_response=credits`
+        ),
+      ]);
+
+      if (!imagesRes.ok || !detailsRes.ok) continue;
+      const imagesData = await imagesRes.json();
+      const detailsData = await detailsRes.json();
+
+      const clueImages = extractFiveBackdrops(imagesData.backdrops || [], detailsData.backdrop_path);
+      // If fewer than five suitable images, try another movie (retry limit handled by loop)
+      if (clueImages.length < 5) {
+        continue;
+      }
+
+      const releaseYear = detailsData.release_date
+        ? parseInt(detailsData.release_date.split('-')[0], 10)
+        : 2000;
+      const decade = releaseYear < 1970 ? 'classic' : `${Math.floor(releaseYear / 10) * 10}s`;
+
+      const primaryOrigins: string[] = (
+        Array.isArray(detailsData.origin_country) ? detailsData.origin_country : []
+      ).map((c: string) => c.toUpperCase());
+      const fallbackProdOrigins: string[] = (
+        (detailsData.production_countries || []).map((pc: any) => pc.iso_3166_1).filter(Boolean)
+      ).map((c: string) => c.toUpperCase());
+      const originCountries = [...primaryOrigins, ...fallbackProdOrigins];
+      const matchedOrigin =
+        selectedCountries.find((sc) => originCountries.includes(sc)) ||
+        originCountries[0] ||
+        'US';
+
+      // Verify filters strictly
+      if (
+        !matchesMovieFilters(
+          {
+            id: `tmdb-${detailsData.id}`,
+            title: detailsData.title,
+            year: releaseYear,
+            decade,
+            country: matchedOrigin,
+          },
+          { countries: selectedCountries, decades: selectedDecades }
+        )
+      ) {
+        continue;
+      }
+
+      const crew = detailsData.credits?.crew || [];
+      const directorObj = crew.find((c: any) => c.job === 'Director');
+      const director = directorObj ? directorObj.name : 'Master Filmmaker';
+      const genreNames = (detailsData.genres || []).map((g: any) => g.name);
+
+      return {
+        movieId: detailsData.id,
+        title: detailsData.title,
+        year: releaseYear,
+        decade,
+        country: matchedOrigin,
+        director,
+        overview: detailsData.overview || '',
+        posterUrl: detailsData.poster_path
+          ? `https://image.tmdb.org/t/p/w500${detailsData.poster_path}`
+          : null,
+        backdropUrl: clueImages[4] || null,
+        genres: genreNames.length > 0 ? genreNames : ['Drama'],
+        clueImages,
+      };
+    } catch (err) {
+      console.warn(`Retry candidate ${candidate.id} error:`, err);
+    }
+  }
+
+  return null;
+}
+
+// 1. START NEW GAME ROUND (Secure: Never exposes title, ID, or answer metadata)
+app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  const body = req.body || {};
+  const query = req.query || {};
+
+  const excludeParam = (body.excludeIds || body.exclude || query.exclude || query.excludeIds || '') as
+    | string
+    | string[];
+  const excludeTitlesParam = (body.excludeTitles || query.excludeTitles || '') as
+    | string
+    | string[];
+  const countriesParam = (body.countries || query.countries || '') as string | string[];
+  const decadesParam = (body.decades || query.decades || '') as string | string[];
+
+  const rawClientExcludeList = (
+    Array.isArray(excludeParam) ? excludeParam : String(excludeParam).split(',')
+  )
+    .map((s) => String(s).trim())
+    .filter(Boolean);
+
+  const rawClientExcludeTitles = (
+    Array.isArray(excludeTitlesParam) ? excludeTitlesParam : String(excludeTitlesParam).split(',')
+  )
+    .map((s) => normalizeTitle(String(s)))
+    .filter(Boolean);
+
+  const selectedCountries = (
+    Array.isArray(countriesParam) ? countriesParam : String(countriesParam).split(',')
+  )
+    .map((c) => String(c).trim().toUpperCase())
+    .filter(Boolean);
+
+  const selectedDecades = (
+    Array.isArray(decadesParam) ? decadesParam : String(decadesParam).split(',')
+  )
+    .map((d) => String(d).trim().toLowerCase())
+    .filter((d) => Boolean(DECADE_DATE_RANGES[d]));
+
+  const filterKey = `${[...selectedCountries].sort().join(',')}|${[...selectedDecades].sort().join(',')}`;
+  const maxServerHistoryForFilter = 60;
+
+  const serverRecentIds = (recentServedIdsByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
+  const serverRecentTitles = (recentServedTitlesByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
+
+  const combinedExcludeList = Array.from(new Set([...serverRecentIds, ...rawClientExcludeList]));
+  const combinedExcludeTitles = new Set<string>([...serverRecentTitles, ...rawClientExcludeTitles]);
+
+  const clientExcludeIds = new Set<string>(
+    combinedExcludeList.flatMap((id) => [
+      id,
+      id.replace(/^tmdb-/, ''),
+      `tmdb-${id.replace(/^tmdb-/, '')}`,
+    ])
+  );
+
+  const apiKey = process.env.TMDB_API_KEY;
+  let selectedMovie: {
+    movieId: number | string;
+    title: string;
+    year: number;
+    decade: string;
+    country: string;
+    director: string;
+    overview: string;
+    posterUrl: string | null;
+    backdropUrl: string | null;
+    genres: string[];
+    clueImages: string[];
+  } | null = null;
+
+  if (apiKey && apiKey.trim().length > 0) {
+    try {
+      selectedMovie = await fetchRandomTmdbRoundMovie(
+        selectedCountries,
+        selectedDecades,
+        clientExcludeIds,
+        combinedExcludeTitles,
+        apiKey.trim(),
+        5
+      );
+    } catch (tmdbErr) {
+      console.error('Error fetching live TMDB round movie:', tmdbErr);
+    }
+  }
+
+  // Graceful fallback to verified built-in archive if TMDB is offline or retries exhausted
+  if (!selectedMovie) {
+    const { movie } = selectNonRepeatingMovie(
+      MOVIE_DATABASE,
+      { countries: selectedCountries, decades: selectedDecades },
+      combinedExcludeList,
+      [],
+      Math.random,
+      combinedExcludeTitles,
+      { allowCycle: true }
+    );
+
+    const fallbackMovie = movie || MOVIE_DATABASE[0];
+    const w780Screenshots = (fallbackMovie.screenshots || []).map((s) =>
+      s.replace(/\/p\/w1280\//, '/p/w780/')
+    );
+
+    selectedMovie = {
+      movieId: fallbackMovie.id,
+      title: fallbackMovie.title,
+      year: fallbackMovie.year,
+      decade: fallbackMovie.decade,
+      country: fallbackMovie.country || 'US',
+      director: fallbackMovie.director,
+      overview: fallbackMovie.boxOfficeTrivia?.secretTrivia || '',
+      posterUrl: fallbackMovie.posterUrl || null,
+      backdropUrl: w780Screenshots[4] || null,
+      genres: fallbackMovie.genres || ['Drama'],
+      clueImages: w780Screenshots,
+    };
+  }
+
+  // Record served movie to prevent repeats in the session
+  recordServerServedMovie(
+    filterKey,
+    String(selectedMovie.movieId),
+    selectedMovie.title,
+    maxServerHistoryForFilter
+  );
+
+  // Generate cryptographically secure round ID
+  const roundId = crypto.randomUUID();
+
+  // Save secret state strictly on server
+  activeRounds.set(roundId, {
+    roundId,
+    movieId: selectedMovie.movieId,
+    title: selectedMovie.title,
+    year: selectedMovie.year,
+    decade: selectedMovie.decade,
+    country: selectedMovie.country,
+    director: selectedMovie.director,
+    overview: selectedMovie.overview,
+    posterUrl: selectedMovie.posterUrl,
+    backdropUrl: selectedMovie.backdropUrl,
+    genres: selectedMovie.genres,
+    clueImages: selectedMovie.clueImages,
+    revealedClues: 1,
+    maxClues: 5,
+    guessesCount: 0,
+    maxGuesses: 5,
+    solved: false,
+    forfeited: false,
+    pointsEarned: 0,
+    guesses: [],
+    createdAt: Date.now(),
+  });
+
+  // Return ONLY public round data to frontend. Title, movie ID, and answer metadata are NEVER revealed!
+  res.json({
+    roundId,
+    totalClues: 5,
+    revealedClues: 1,
+    maxGuesses: 5,
+    remainingGuesses: 5,
+    imageUrls: selectedMovie.clueImages, // 5 w780 URLs
+    decade: selectedMovie.decade,
+    country: selectedMovie.country,
+    genres: selectedMovie.genres,
+  });
+});
+
+// 2. REVEAL NEXT CLUE (Incrementally unlocks images 2 through 5)
+app.post('/api/game/round/reveal-clue', gameRateLimitMiddleware, (req: Request, res: Response) => {
+  const { roundId } = req.body || {};
+  if (!roundId || !activeRounds.has(roundId)) {
+    res.status(404).json({ error: 'Round not found or expired.' });
+    return;
+  }
+
+  const round = activeRounds.get(roundId)!;
+  if (round.solved || round.forfeited) {
+    res.json({
+      revealedClues: round.revealedClues,
+      totalClues: round.maxClues,
+      remainingClues: Math.max(0, round.maxClues - round.revealedClues),
+      isFinished: true,
+    });
+    return;
+  }
+
+  if (round.revealedClues < round.maxClues) {
+    round.revealedClues++;
+  }
+
+  res.json({
+    revealedClues: round.revealedClues,
+    totalClues: round.maxClues,
+    remainingClues: Math.max(0, round.maxClues - round.revealedClues),
+  });
+});
+
+// 3. SUBMIT GUESS (Server-side validation; prevents duplicate submissions / repeated score awards)
+app.post('/api/game/round/guess', gameRateLimitMiddleware, (req: Request, res: Response) => {
+  const { roundId, guess } = req.body || {};
+  if (!roundId || !activeRounds.has(roundId)) {
+    res.status(404).json({ error: 'Round not found or expired.' });
+    return;
+  }
+
+  const round = activeRounds.get(roundId)!;
+
+  // Prevent multiple submissions or repeated score awards for the same round
+  if (round.solved || round.forfeited) {
+    res.status(400).json({
+      error: 'This round has already finished. No further submissions are allowed.',
+      isGameOver: true,
+      roundStatus: round.solved ? 'won' : 'lost',
+      pointsEarned: round.pointsEarned,
+    });
+    return;
+  }
+
+  const trimmedGuess = typeof guess === 'string' ? guess.trim() : '';
+  if (!trimmedGuess) {
+    res.status(400).json({ error: 'Guess cannot be empty.' });
+    return;
+  }
+
+  // Normalize guesses: trim whitespace and compare case-insensitively
+  const isMatch = checkTitleMatch(trimmedGuess, round.title);
+
+  // Look up catalog hints for year and genre feedback
+  const catalogEntry = POPULAR_TITLES_CATALOG.find((m) => checkTitleMatch(m.title, trimmedGuess));
+  const guessYear = catalogEntry ? catalogEntry.year : 0;
+  const guessGenres = catalogEntry ? catalogEntry.genres : [];
+  const yearRelation = guessYear ? compareReleaseYear(guessYear, round.year) : 'exact';
+  const genreMatches = guessGenres.length > 0 ? findMatchingGenres(guessGenres, round.genres) : [];
+  const decadeMatch = guessYear ? Math.floor(guessYear / 10) === Math.floor(round.year / 10) : false;
+
+  if (isMatch) {
+    // Round Solved / Won!
+    round.solved = true;
+    round.revealedClues = 5;
+
+    const pointsEarned = calculateScore({
+      clueTierRevealed: round.revealedClues,
+      incorrectGuesses: round.guessesCount,
+      streakCount: 1,
+    });
+    round.pointsEarned = pointsEarned;
+
+    res.json({
+      isCorrect: true,
+      isGameOver: true,
+      roundStatus: 'won',
+      pointsEarned,
+      revealedClues: 5,
+      message: 'Brilliant deduction! That is the correct movie!',
+      movie: {
+        id: `tmdb-${round.movieId}`,
+        title: round.title,
+        year: round.year,
+        director: round.director,
+        overview: round.overview,
+        posterUrl: round.posterUrl,
+        backdropUrl: round.backdropUrl,
+        genres: round.genres,
+        screenshots: round.clueImages,
+      },
+    });
+    return;
+  }
+
+  // Incorrect Guess
+  round.guessesCount++;
+
+  // Step-by-step unlock next screenshot on incorrect guess
+  if (round.revealedClues < round.maxClues) {
+    round.revealedClues++;
+  }
+
+  const guessRecord = {
+    title: catalogEntry ? catalogEntry.title : trimmedGuess,
+    year: guessYear,
+    genres: guessGenres,
+    isCorrect: false,
+    yearRelation,
+    decadeMatch,
+    genreMatches,
+    guessNumber: round.guessesCount,
+  };
+  round.guesses.push(guessRecord);
+
+  // Check if out of guesses (5 chances)
+  if (round.guessesCount >= round.maxGuesses) {
+    round.forfeited = true;
+    round.revealedClues = 5;
+
+    res.json({
+      isCorrect: false,
+      isGameOver: true,
+      roundStatus: 'lost',
+      pointsEarned: 0,
+      revealedClues: 5,
+      remainingGuesses: 0,
+      message: 'Out of guesses! The film has been revealed.',
+      guessRecord,
+      movie: {
+        id: `tmdb-${round.movieId}`,
+        title: round.title,
+        year: round.year,
+        director: round.director,
+        overview: round.overview,
+        posterUrl: round.posterUrl,
+        backdropUrl: round.backdropUrl,
+        genres: round.genres,
+        screenshots: round.clueImages,
+      },
+    });
+    return;
+  }
+
+  res.json({
+    isCorrect: false,
+    isGameOver: false,
+    roundStatus: 'playing',
+    remainingGuesses: round.maxGuesses - round.guessesCount,
+    revealedClues: round.revealedClues,
+    message: 'Incorrect guess. Inspect the scene closely or reveal the next clue!',
+    guessRecord,
+  });
+});
+
+// 4. SKIP MOVIE (Forfeits round, reveals answer metadata without awarding points)
+app.post('/api/game/round/skip', gameRateLimitMiddleware, (req: Request, res: Response) => {
+  const { roundId } = req.body || {};
+  if (!roundId || !activeRounds.has(roundId)) {
+    res.status(404).json({ error: 'Round not found or expired.' });
+    return;
+  }
+
+  const round = activeRounds.get(roundId)!;
+  round.forfeited = true;
+  round.revealedClues = 5;
+  round.pointsEarned = 0;
+
+  res.json({
+    skipped: true,
+    isGameOver: true,
+    roundStatus: 'lost',
+    pointsEarned: 0,
+    revealedClues: 5,
+    message: 'Round skipped. The film has been revealed.',
+    movie: {
+      id: `tmdb-${round.movieId}`,
+      title: round.title,
+      year: round.year,
+      director: round.director,
+      overview: round.overview,
+      posterUrl: round.posterUrl,
+      backdropUrl: round.backdropUrl,
+      genres: round.genres,
+      screenshots: round.clueImages,
+    },
+  });
 });
 
 async function startServer() {

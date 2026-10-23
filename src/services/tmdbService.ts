@@ -429,4 +429,164 @@ export async function prefetchNextTmdbMovie(
   }
 }
 
+// ============================================================================
+// COMPLETE RANDOM MOVIE CLUE API CLIENT
+// ============================================================================
+
+export interface PublicRoundData {
+  roundId: string;
+  totalClues: number;
+  revealedClues: number;
+  maxGuesses: number;
+  remainingGuesses: number;
+  imageUrls: string[]; // 5 w780 URLs
+  decade?: string;
+  country?: string;
+  genres?: string[];
+}
+
+export interface GuessResult {
+  isCorrect: boolean;
+  isGameOver: boolean;
+  roundStatus?: 'won' | 'lost' | 'playing';
+  pointsEarned?: number;
+  revealedClues?: number;
+  remainingGuesses?: number;
+  message?: string;
+  guessRecord?: any;
+  movie?: Movie;
+  error?: string;
+}
+
+export interface RevealClueResult {
+  revealedClues: number;
+  totalClues: number;
+  remainingClues: number;
+  isFinished?: boolean;
+}
+
+export interface SkipResult {
+  skipped: boolean;
+  isGameOver: boolean;
+  roundStatus: 'lost';
+  pointsEarned: number;
+  revealedClues: number;
+  message: string;
+  movie: Movie;
+}
+
+/**
+ * Preloads image clues in the background without displaying them early.
+ */
+export function preloadClueImages(urls: string[]): void {
+  if (!urls || !Array.isArray(urls) || typeof window === 'undefined') return;
+  urls.forEach((url) => {
+    if (url && typeof url === 'string') {
+      const img = new Image();
+      img.src = url;
+    }
+  });
+}
+
+/**
+ * Starts a new random movie round via server endpoint.
+ * Secret movie title, ID, and answer metadata are never exposed in the response.
+ */
+export async function startNewGameRound(
+  filters: MovieFilters = DEFAULT_FILTERS,
+  customExcludeIds: string[] = [],
+  customExcludeTitles: string[] = []
+): Promise<PublicRoundData> {
+  const seen = getSeenMovieIds();
+  const allExcluded = buildOrderedExclusionList(seen, customExcludeIds);
+  const seenTitles = getSeenMovieTitles();
+  const allExcludedTitles = Array.from(
+    new Set([...seenTitles, ...customExcludeTitles.map(normalizeTitle).filter(Boolean)])
+  );
+
+  const res = await fetch('/api/game/round/new', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      excludeIds: allExcluded.slice(-140),
+      excludeTitles: allExcludedTitles.slice(-50),
+      countries: filters.countries || [],
+      decades: filters.decades || [],
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to start game round: ${res.statusText}`);
+  }
+
+  const data: PublicRoundData = await res.json();
+
+  // Preload all 5 backdrop clues in background without displaying them early
+  if (Array.isArray(data.imageUrls)) {
+    preloadClueImages(data.imageUrls);
+  }
+
+  return data;
+}
+
+/**
+ * Unlocks the next clue image (clues 2 through 5)
+ */
+export async function revealNextRoundClue(roundId: string): Promise<RevealClueResult> {
+  const res = await fetch('/api/game/round/reveal-clue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ roundId }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to reveal next clue: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+/**
+ * Submits player guess to server for case-insensitive normalized validation.
+ * Answer is only returned when round ends (won or out of guesses).
+ */
+export async function submitRoundGuess(roundId: string, guess: string): Promise<GuessResult> {
+  const res = await fetch('/api/game/round/guess', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ roundId, guess }),
+  });
+
+  const data: GuessResult = await res.json();
+
+  if (data.isGameOver && data.movie) {
+    markMovieAsSeen(data.movie.id, data.movie.title);
+  }
+
+  return data;
+}
+
+/**
+ * Skips the current round, forfeits score, and reveals the answer.
+ */
+export async function skipGameRound(roundId: string): Promise<SkipResult> {
+  const res = await fetch('/api/game/round/skip', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ roundId }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to skip round: ${res.statusText}`);
+  }
+
+  const data: SkipResult = await res.json();
+  if (data.movie) {
+    markMovieAsSeen(data.movie.id, data.movie.title);
+  }
+
+  return data;
+}
+
+
 

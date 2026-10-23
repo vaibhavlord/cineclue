@@ -143,7 +143,8 @@ export interface TmdbBackdropItem {
 export function selectDistinctSceneScreenshots(
   backdrops: TmdbBackdropItem[],
   primaryBackdropPath?: string | null,
-  requiredCount = 5
+  requiredCount = 5,
+  imageSize: 'w780' | 'w1280' = 'w780'
 ): string[] {
   if (!Array.isArray(backdrops) || backdrops.length === 0) {
     return [];
@@ -305,7 +306,7 @@ export function selectDistinctSceneScreenshots(
 
   return selectedItems
     .slice(0, requiredCount)
-    .map((item) => `https://image.tmdb.org/t/p/w1280${item.file_path}`);
+    .map((item) => `https://image.tmdb.org/t/p/${imageSize}${item.file_path}`);
 }
 
 export interface FilterableMovieItem {
