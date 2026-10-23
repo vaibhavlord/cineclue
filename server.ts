@@ -1335,7 +1335,15 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
     ])
   );
 
-  const apiKey = process.env.TMDB_API_KEY;
+  const apiKey = process.env.TMDB_API_KEY?.trim();
+  if (!apiKey) {
+    res.status(503).json({
+      error: 'TMDB_API_KEY is not configured on the server.',
+      code: 'TMDB_API_KEY_MISSING',
+    });
+    return;
+  }
+
   let selectedMovie: {
     movieId: number | string;
     title: string;
@@ -1350,58 +1358,25 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
     clueImages: string[];
   } | null = null;
 
-  if (apiKey && apiKey.trim().length > 0) {
-    try {
-      selectedMovie = await fetchRandomTmdbRoundMovie(
-        selectedCountries,
-        selectedDecades,
-        clientExcludeIds,
-        combinedExcludeTitles,
-        apiKey.trim(),
-        8
-      );
-
-    } catch (tmdbErr) {
-      console.error('Error fetching live TMDB round movie:', tmdbErr);
-    }
+  try {
+    selectedMovie = await fetchRandomTmdbRoundMovie(
+      selectedCountries,
+      selectedDecades,
+      clientExcludeIds,
+      combinedExcludeTitles,
+      apiKey,
+      8
+    );
+  } catch (tmdbErr) {
+    console.error('Error fetching live TMDB round movie:', tmdbErr);
   }
 
-  // Use the archive only when it can provide a fresh movie that still matches every active filter.
   if (!selectedMovie) {
-    const { movie } = selectNonRepeatingMovie(
-      MOVIE_DATABASE,
-      { countries: selectedCountries, decades: selectedDecades },
-      combinedExcludeList,
-      [],
-      Math.random,
-      combinedExcludeTitles
-    );
-
-    if (!movie) {
-      res.status(409).json({
-        error: 'No unseen movies match the selected filters.',
-        exhausted: true,
-      });
-      return;
-    }
-
-    const w780Screenshots = (movie.screenshots || []).map((s) =>
-      s.replace(/\/p\/w1280\//, '/p/w780/')
-    );
-
-    selectedMovie = {
-      movieId: movie.id,
-      title: movie.title,
-      year: movie.year,
-      decade: movie.decade,
-      country: movie.country || (selectedCountries[0] || 'US'),
-      director: movie.director,
-      overview: movie.boxOfficeTrivia?.secretTrivia || '',
-      posterUrl: movie.posterUrl || null,
-      backdropUrl: w780Screenshots[4] || null,
-      genres: movie.genres || ['Drama'],
-      clueImages: w780Screenshots,
-    };
+    res.status(503).json({
+      error: 'TMDB did not return a new movie matching the selected filters.',
+      code: 'TMDB_MOVIE_UNAVAILABLE',
+    });
+    return;
   }
 
   // Record served movie to prevent repeats in the session
