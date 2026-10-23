@@ -291,7 +291,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [gameState, soundOn]);
 
-  const handleStartGame = async (mode: GameMode) => {
+  const handleStartGame = async (mode: GameMode, resetSeenPool = false) => {
     playProjectorClick();
     const activeFilters = filtersRef.current;
     setIsLoadingMovie(true);
@@ -301,7 +301,7 @@ export default function App() {
     try {
       const excludeList = Array.from(sessionPlayedIds.current);
       const excludeTitles = Array.from(sessionPlayedTitles.current);
-      const roundData = await startNewGameRound(activeFilters, excludeList, excludeTitles);
+      const roundData = await startNewGameRound(activeFilters, excludeList, excludeTitles, resetSeenPool);
       if (!roundData || !roundData.roundId) {
         setShowExhaustedModal(true);
         return;
@@ -739,11 +739,11 @@ export default function App() {
             sessionPlayedTitles.current.clear();
             resetSeenMovies();
             if (gameState === 'title') {
-              handleStartGame(gameMode);
+              handleStartGame(gameMode, true);
             } else {
               setIsLoadingMovie(true);
               try {
-                const roundData = await startNewGameRound(filtersRef.current, [], []);
+                const roundData = await startNewGameRound(filtersRef.current, [], [], true);
                 if (roundData && roundData.roundId) {
                   setActiveRound(roundData);
                   setRevealedMovie(null);
@@ -753,6 +753,8 @@ export default function App() {
                   setRoundStatus('playing');
                   setLastRoundPoints(0);
                   setGameState('playing');
+                } else {
+                  setShowExhaustedModal(true);
                 }
               } finally {
                 setIsLoadingMovie(false);
