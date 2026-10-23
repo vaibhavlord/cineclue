@@ -181,59 +181,36 @@ export default function App() {
       // Ignore
     }
 
-    // If currently in active gameplay (playing, paused, or post-round modal), load a round matching the updated filters!
     if ((gameState === 'playing' || gameState === 'paused' || gameState === 'gameover') && gameMode !== 'daily') {
       setIsLoadingMovie(true);
       setShowExhaustedModal(false);
       try {
         const excludeList = Array.from(sessionPlayedIds.current);
         const excludeTitles = Array.from(sessionPlayedTitles.current);
-        let roundData = await startNewGameRound(newFilters, excludeList, excludeTitles);
-        if (!roundData || !roundData.roundId) {
-          sessionPlayedIds.current.clear();
-          sessionPlayedTitles.current.clear();
-          roundData = await startNewGameRound(newFilters, [], []);
+        const roundData = await startNewGameRound(newFilters, excludeList, excludeTitles);
+        if (!roundData) {
+          setShowExhaustedModal(true);
+          return;
         }
-        if (roundData && roundData.roundId) {
-          setActiveRound(roundData);
-          setRevealedMovie(null);
-          setRevealedTiers(roundData.revealedClues || 1);
-          setGuesses([]);
-          setUnlockedLetters(new Set());
-          setRoundStatus('playing');
-          setLastRoundPoints(0);
-          if (gameMode === 'speedrun') {
-            setSpeedrunTimer(15);
-          }
-          setGameState('playing');
+
+        setActiveRound(roundData);
+        setRevealedMovie(null);
+        setRevealedTiers(roundData.revealedClues || 1);
+        setGuesses([]);
+        setUnlockedLetters(new Set());
+        setRoundStatus('playing');
+        setLastRoundPoints(0);
+        if (gameMode === 'speedrun') {
+          setSpeedrunTimer(15);
         }
+        setGameState('playing');
       } catch (err) {
-        console.warn('Error applying filters, auto-recovering from TMDB with cleared exclusions:', err);
-        try {
-          sessionPlayedIds.current.clear();
-          sessionPlayedTitles.current.clear();
-          const roundData = await startNewGameRound(newFilters, [], []);
-          if (roundData && roundData.roundId) {
-            setActiveRound(roundData);
-            setRevealedMovie(null);
-            setRevealedTiers(roundData.revealedClues || 1);
-            setGuesses([]);
-            setUnlockedLetters(new Set());
-            setRoundStatus('playing');
-            setLastRoundPoints(0);
-            if (gameMode === 'speedrun') {
-              setSpeedrunTimer(15);
-            }
-            setGameState('playing');
-          }
-        } catch (innerErr) {
-          console.error('Auto recovery failed:', innerErr);
-        }
+        console.warn('Unable to load a movie for the selected filters:', err);
+        setShowExhaustedModal(true);
       } finally {
         setIsLoadingMovie(false);
       }
     } else {
-      // On title screen, prefetch next movie matching updated filters
       const excludeList = Array.from(sessionPlayedIds.current);
       const excludeTitles = Array.from(sessionPlayedTitles.current);
       prefetchNextTmdbMovie(excludeList, newFilters, excludeTitles);
@@ -247,23 +224,21 @@ export default function App() {
       if (params.get('autostart') === '1') {
         const excludeList = Array.from(sessionPlayedIds.current);
         const excludeTitles = Array.from(sessionPlayedTitles.current);
-        startNewGameRound(filtersRef.current, excludeList, excludeTitles).then((roundData) => {
-          if (roundData && roundData.roundId) {
-            setActiveRound(roundData);
-            setRevealedMovie(null);
-            setRevealedTiers(roundData.revealedClues || 1);
-            setGameState('playing');
-          } else {
-            return startNewGameRound(filtersRef.current, [], []);
-          }
-        }).then((recoveryRound) => {
-          if (recoveryRound && recoveryRound.roundId) {
-            setActiveRound(recoveryRound);
-            setRevealedMovie(null);
-            setRevealedTiers(recoveryRound.revealedClues || 1);
-            setGameState('playing');
-          }
-        }).catch((err) => console.warn('Autostart recovery:', err));
+        startNewGameRound(filtersRef.current, excludeList, excludeTitles)
+          .then((roundData) => {
+            if (roundData && roundData.roundId) {
+              setActiveRound(roundData);
+              setRevealedMovie(null);
+              setRevealedTiers(roundData.revealedClues || 1);
+              setGameState('playing');
+            } else {
+              setShowExhaustedModal(true);
+            }
+          })
+          .catch((err) => {
+            console.warn('Autostart could not load a movie:', err);
+            setShowExhaustedModal(true);
+          });
       }
     }
   }, []);
@@ -326,84 +301,28 @@ export default function App() {
     try {
       const excludeList = Array.from(sessionPlayedIds.current);
       const excludeTitles = Array.from(sessionPlayedTitles.current);
-      let roundData = await startNewGameRound(activeFilters, excludeList, excludeTitles);
+      const roundData = await startNewGameRound(activeFilters, excludeList, excludeTitles);
       if (!roundData || !roundData.roundId) {
-        sessionPlayedIds.current.clear();
-        sessionPlayedTitles.current.clear();
-        roundData = await startNewGameRound(activeFilters, [], []);
+        setShowExhaustedModal(true);
+        return;
       }
-      if (roundData && roundData.roundId) {
-        setActiveRound(roundData);
-        setRevealedMovie(null);
-        setGameMode(mode);
-        setCurrentMovieIndex(0);
-        setRevealedTiers(roundData.revealedClues || 1);
-        setGuesses([]);
-        setUnlockedLetters(new Set());
-        setRoundStatus('playing');
-        setLastRoundPoints(0);
-        if (mode === 'speedrun') {
-          setSpeedrunTimer(15);
-        }
-        setGameState('playing');
+
+      setActiveRound(roundData);
+      setRevealedMovie(null);
+      setGameMode(mode);
+      setCurrentMovieIndex(0);
+      setRevealedTiers(roundData.revealedClues || 1);
+      setGuesses([]);
+      setUnlockedLetters(new Set());
+      setRoundStatus('playing');
+      setLastRoundPoints(0);
+      if (mode === 'speedrun') {
+        setSpeedrunTimer(15);
       }
+      setGameState('playing');
     } catch (err) {
-      console.warn('Error starting game round, auto-retrying via TMDB:', err);
-      try {
-        sessionPlayedIds.current.clear();
-        sessionPlayedTitles.current.clear();
-        const roundData = await startNewGameRound(activeFilters, [], []);
-        if (roundData && roundData.roundId) {
-          setActiveRound(roundData);
-          setRevealedMovie(null);
-          setGameMode(mode);
-          setCurrentMovieIndex(0);
-          setRevealedTiers(roundData.revealedClues || 1);
-          setGuesses([]);
-          setUnlockedLetters(new Set());
-          setRoundStatus('playing');
-          setLastRoundPoints(0);
-          if (mode === 'speedrun') {
-            setSpeedrunTimer(15);
-          }
-          setGameState('playing');
-        }
-      } catch (innerErr) {
-        console.error('Recovery failed, using guaranteed fallback:', innerErr);
-        const { movie } = selectNonRepeatingMovie(
-          MOVIE_DATABASE,
-          activeFilters,
-          [],
-          [],
-          Math.random,
-          [],
-          { allowCycle: true }
-        );
-        const fallback = movie || MOVIE_DATABASE[0];
-        setActiveRound({
-          roundId: `local-${fallback.id}-${Date.now()}`,
-          totalClues: 5,
-          revealedClues: 1,
-          maxGuesses: 5,
-          remainingGuesses: 5,
-          imageUrls: (fallback.screenshots || []).map((s) => s.replace(/\/p\/w1280\//, '/p/w780/')),
-          decade: fallback.decade,
-          country: fallback.country || 'US',
-          genres: fallback.genres || ['Drama'],
-        });
-        setRevealedMovie(null);
-        setGameMode(mode);
-        setCurrentMovieIndex(0);
-        setRevealedTiers(1);
-        setGuesses([]);
-        setUnlockedLetters(new Set());
-        setRoundStatus('playing');
-        setLastRoundPoints(0);
-        if (mode === 'speedrun') {
-          setSpeedrunTimer(15);
-        }
-        setGameState('playing');
-      }
+      console.warn('Unable to start a movie round:', err);
+      setShowExhaustedModal(true);
     } finally {
       setIsLoadingMovie(false);
     }
@@ -630,49 +549,27 @@ export default function App() {
     try {
       const excludeList = Array.from(sessionPlayedIds.current);
       const excludeTitles = Array.from(sessionPlayedTitles.current);
-      let roundData = await startNewGameRound(filtersRef.current, excludeList, excludeTitles);
+      const roundData = await startNewGameRound(filtersRef.current, excludeList, excludeTitles);
       if (!roundData || !roundData.roundId) {
-        sessionPlayedIds.current.clear();
-        sessionPlayedTitles.current.clear();
-        roundData = await startNewGameRound(filtersRef.current, [], []);
+        setShowExhaustedModal(true);
+        return;
       }
-      if (roundData && roundData.roundId) {
-        setActiveRound(roundData);
-        setRevealedMovie(null);
-        setCurrentMovieIndex((prev) => prev + 1);
-        setRevealedTiers(roundData.revealedClues || 1);
-        setGuesses([]);
-        setUnlockedLetters(new Set());
-        setRoundStatus('playing');
-        setLastRoundPoints(0);
-        if (gameMode === 'speedrun') {
-          setSpeedrunTimer(15);
-        }
-        setGameState('playing');
+
+      setActiveRound(roundData);
+      setRevealedMovie(null);
+      setCurrentMovieIndex((prev) => prev + 1);
+      setRevealedTiers(roundData.revealedClues || 1);
+      setGuesses([]);
+      setUnlockedLetters(new Set());
+      setRoundStatus('playing');
+      setLastRoundPoints(0);
+      if (gameMode === 'speedrun') {
+        setSpeedrunTimer(15);
       }
+      setGameState('playing');
     } catch (err) {
-      console.warn('Error starting next film round, auto-retrying via TMDB:', err);
-      try {
-        sessionPlayedIds.current.clear();
-        sessionPlayedTitles.current.clear();
-        const roundData = await startNewGameRound(filtersRef.current, [], []);
-        if (roundData && roundData.roundId) {
-          setActiveRound(roundData);
-          setRevealedMovie(null);
-          setCurrentMovieIndex((prev) => prev + 1);
-          setRevealedTiers(roundData.revealedClues || 1);
-          setGuesses([]);
-          setUnlockedLetters(new Set());
-          setRoundStatus('playing');
-          setLastRoundPoints(0);
-          if (gameMode === 'speedrun') {
-            setSpeedrunTimer(15);
-          }
-          setGameState('playing');
-        }
-      } catch (innerErr) {
-        console.error('Recovery failed:', innerErr);
-      }
+      console.warn('Unable to load the next movie:', err);
+      setShowExhaustedModal(true);
     } finally {
       setIsLoadingMovie(false);
     }
