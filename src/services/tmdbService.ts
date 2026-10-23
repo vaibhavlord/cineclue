@@ -1,34 +1,91 @@
 import { Movie, MovieFilters } from '../types/movie';
 import { MOVIE_DATABASE } from '../data/movies';
+import { DEFAULT_FILTERS } from '../data/filterOptions';
+import { matchesMovieFilters, normalizeTitle, selectNonRepeatingMovie } from '../game/rules';
 
 const SEEN_MOVIES_STORAGE_KEY = 'cineclue_seen_tmdb_ids_v1';
 
-export function getSeenMovieIds(): string[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(SEEN_MOVIES_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+// In-memory seen tracking ensures non-repetition even on devices/webviews where localStorage is restricted
+const inMemorySeenIds = new Set<string>();
+const inMemorySeenTitles = new Set<string>();
+
+function normalizeMovieId(id: string): string {
+  return id.trim().replace(/^tmdb-/, '');
 }
 
-export function markMovieAsSeen(id: string): void {
+export function getSeenMovieIds(): string[] {
+  const combined = new Set<string>(inMemorySeenIds);
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(SEEN_MOVIES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (typeof item === 'string' && item.trim()) {
+              combined.add(item.trim());
+              inMemorySeenIds.add(item.trim());
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+  }
+  return Array.from(combined);
+}
+
+export function markMovieAsSeen(id: string, title?: string): void {
+  if (!id) return;
+  const trimmedId = id.trim();
+  inMemorySeenIds.add(trimmedId);
+  if (title) {
+    const normTitle = normalizeTitle(title);
+    if (normTitle) inMemorySeenTitles.add(normTitle);
+  }
+
   if (typeof window === 'undefined') return;
   try {
     const seen = getSeenMovieIds();
-    if (!seen.includes(id)) {
-      seen.push(id);
-      // Keep up to 300 seen IDs before cycling
-      if (seen.length > 300) seen.shift();
-      localStorage.setItem(SEEN_MOVIES_STORAGE_KEY, JSON.stringify(seen));
+    if (!seen.includes(trimmedId)) {
+      seen.push(trimmedId);
     }
+    while (seen.length > 400) {
+      seen.shift();
+    }
+    localStorage.setItem(SEEN_MOVIES_STORAGE_KEY, JSON.stringify(seen));
+  } catch {
+    // Ignore storage quota/privacy errors
+  }
+}
+
+export function clearSeenMoviePool(poolIdsToClear: string[], keepIds: string[] = []): void {
+  const keepSet = new Set(keepIds.flatMap((id) => [id.trim(), normalizeMovieId(id)]));
+  const clearSet = new Set(poolIdsToClear.flatMap((id) => [id.trim(), normalizeMovieId(id)]));
+
+  for (const id of Array.from(inMemorySeenIds)) {
+    const norm = normalizeMovieId(id);
+    if ((clearSet.has(id) || clearSet.has(norm)) && !keepSet.has(id) && !keepSet.has(norm)) {
+      inMemorySeenIds.delete(id);
+    }
+  }
+
+  if (typeof window === 'undefined') return;
+  try {
+    const current = getSeenMovieIds().filter((id) => {
+      const norm = normalizeMovieId(id);
+      return (!clearSet.has(id) && !clearSet.has(norm)) || keepSet.has(id) || keepSet.has(norm);
+    });
+    localStorage.setItem(SEEN_MOVIES_STORAGE_KEY, JSON.stringify(current));
   } catch {
     // Ignore storage errors
   }
 }
 
 export function resetSeenMovies(): void {
+  inMemorySeenIds.clear();
+  inMemorySeenTitles.clear();
   if (typeof window === 'undefined') return;
   try {
     localStorage.removeItem(SEEN_MOVIES_STORAGE_KEY);
@@ -39,77 +96,126 @@ export function resetSeenMovies(): void {
 
 let cachedNextMovie: Movie | null = null;
 let cachedFiltersKey = '';
-let isPrefetching = false;
+let prefetchGeneration = 0;
 
 function buildFilterKey(filters?: MovieFilters): string {
-  if (!filters) return '';
-  const countries = [...(filters.countries || [])].sort().join(',');
-  const decades = [...(filters.decades || [])].sort().join(',');
+  if (!filters) return '|';
+  const countries = [...(filters.countries || [])]
+    .map((c) => c.trim().toUpperCase())
+    .filter(Boolean)
+    .sort()
+    .join(',');
+  const decades = [...(filters.decades || [])]
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(',');
   return `${countries}|${decades}`;
 }
 
+export function clearMoviePrefetchCache(): void {
+  cachedNextMovie = null;
+  cachedFiltersKey = '';
+  prefetchGeneration += 1;
+}
+
+function isMovieAlreadyExcluded(movie: Movie, excludedIds: Iterable<string>): boolean {
+  const rawId = movie.id.trim();
+  const cleanId = normalizeMovieId(rawId);
+  const normTitle = normalizeTitle(movie.title);
+
+  for (const ex of excludedIds) {
+    if (!ex) continue;
+    const exTrim = ex.trim();
+    const exClean = normalizeMovieId(exTrim);
+    if (exTrim === rawId || exClean === cleanId) {
+      return true;
+    }
+  }
+
+  if (normTitle && inMemorySeenTitles.has(normTitle)) {
+    return true;
+  }
+
+  return false;
+}
+
 /**
- * Fetches a fresh, random, unrepeated movie from the TMDB backend endpoint.
+ * Fetches a fresh, random, unrepeated movie from the TMDB backend endpoint or verified multi-country archive.
  */
 export async function fetchRandomTmdbMovie(
   customExcludeIds: string[] = [],
-  filters?: MovieFilters
+  filters: MovieFilters = DEFAULT_FILTERS
 ): Promise<Movie> {
-  const currentKey = buildFilterKey(filters);
+  const activeFilters: MovieFilters = {
+    countries: filters?.countries || [],
+    decades: filters?.decades || [],
+  };
+  const currentKey = buildFilterKey(activeFilters);
+  const seen = getSeenMovieIds();
+  const allExcluded = Array.from(new Set([...seen, ...customExcludeIds]));
 
-  // If we already have a pre-fetched movie matching the active filters, use it!
-  if (cachedNextMovie && cachedFiltersKey === currentKey && !customExcludeIds.includes(cachedNextMovie.id)) {
+  // 1. If we already have a pre-fetched movie matching the active filters and not excluded, use it and mark it seen!
+  if (
+    cachedNextMovie &&
+    cachedFiltersKey === currentKey &&
+    !isMovieAlreadyExcluded(cachedNextMovie, allExcluded) &&
+    matchesMovieFilters(cachedNextMovie, activeFilters)
+  ) {
     const movieToReturn = cachedNextMovie;
     cachedNextMovie = null;
-    // Trigger pre-fetch of the NEXT one in background
-    prefetchNextTmdbMovie([...customExcludeIds, movieToReturn.id], filters);
+    markMovieAsSeen(movieToReturn.id, movieToReturn.title);
+    prefetchNextTmdbMovie([...allExcluded, movieToReturn.id], activeFilters);
     return movieToReturn;
   }
 
-  const seen = getSeenMovieIds();
-  const allExcluded = Array.from(new Set([...seen, ...customExcludeIds]));
-  const excludeParam = allExcluded.slice(-50).join(',');
+  // Clear any stale cached movie that did not match current filters or exclusions
+  cachedNextMovie = null;
 
+  const excludeParam = allExcluded.slice(-120).join(',');
   const queryParams = new URLSearchParams();
   if (excludeParam) queryParams.set('exclude', excludeParam);
-  if (filters?.countries && filters.countries.length > 0) {
-    queryParams.set('countries', filters.countries.join(','));
+  if (activeFilters.countries.length > 0) {
+    queryParams.set('countries', activeFilters.countries.join(','));
   }
-  if (filters?.decades && filters.decades.length > 0) {
-    queryParams.set('decades', filters.decades.join(','));
+  if (activeFilters.decades.length > 0) {
+    queryParams.set('decades', activeFilters.decades.join(','));
   }
+  // Cache-busting timestamp prevents intermediate proxies/browsers from caching GET responses across rounds
+  queryParams.set('_t', String(Date.now()));
 
   try {
-    const res = await fetch(`/api/tmdb/random-movie?${queryParams.toString()}`);
+    const res = await fetch(`/api/tmdb/random-movie?${queryParams.toString()}`, {
+      cache: 'no-store',
+    });
     if (!res.ok) {
       throw new Error(`TMDB endpoint returned ${res.status}`);
     }
     const data = await res.json();
-    if (data.movie) {
-      markMovieAsSeen(data.movie.id);
-      // Start prefetching the next movie
-      prefetchNextTmdbMovie([...allExcluded, data.movie.id], filters);
+    if (data?.movie && matchesMovieFilters(data.movie, activeFilters)) {
+      markMovieAsSeen(data.movie.id, data.movie.title);
+      prefetchNextTmdbMovie([...allExcluded, data.movie.id], activeFilters);
       return data.movie;
     }
   } catch (err) {
-    console.warn('Could not fetch from TMDB, falling back to local library:', err);
+    console.warn('Using local multi-country cinema archive:', err);
   }
 
-  // Fallback to random unplayed movie from curated list matching filters
-  let pool = MOVIE_DATABASE.filter(m => !allExcluded.includes(m.id));
+  // 2. Fallback to curated & global multi-country archive strictly respecting active filters and exclusions
+  const selection = selectNonRepeatingMovie(
+    MOVIE_DATABASE,
+    activeFilters,
+    allExcluded,
+    customExcludeIds
+  );
 
-  if (filters?.decades && filters.decades.length > 0) {
-    const decadeMatch = pool.filter(m => {
-      if (filters.decades.includes('classic') && m.year < 1970) return true;
-      return filters.decades.includes(m.decade);
-    });
-    if (decadeMatch.length > 0) pool = decadeMatch;
+  if (selection.didCycleFilterPool) {
+    clearSeenMoviePool(selection.filterPoolIds, customExcludeIds);
   }
 
-  if (pool.length === 0) pool = MOVIE_DATABASE;
-  const picked = pool[Math.floor(Math.random() * pool.length)];
-  markMovieAsSeen(picked.id);
-  return picked;
+  markMovieAsSeen(selection.movie.id, selection.movie.title);
+  prefetchNextTmdbMovie([...customExcludeIds, selection.movie.id], activeFilters);
+  return selection.movie;
 }
 
 /**
@@ -117,36 +223,49 @@ export async function fetchRandomTmdbMovie(
  */
 export async function prefetchNextTmdbMovie(
   excludedIds: string[] = [],
-  filters?: MovieFilters
+  filters: MovieFilters = DEFAULT_FILTERS
 ): Promise<void> {
-  if (isPrefetching) return;
-  isPrefetching = true;
+  const activeFilters: MovieFilters = {
+    countries: filters?.countries || [],
+    decades: filters?.decades || [],
+  };
+  const targetKey = buildFilterKey(activeFilters);
+  const myGeneration = ++prefetchGeneration;
 
   try {
     const seen = getSeenMovieIds();
     const allExcluded = Array.from(new Set([...seen, ...excludedIds]));
-    const excludeParam = allExcluded.slice(-50).join(',');
+    const excludeParam = allExcluded.slice(-120).join(',');
 
     const queryParams = new URLSearchParams();
     if (excludeParam) queryParams.set('exclude', excludeParam);
-    if (filters?.countries && filters.countries.length > 0) {
-      queryParams.set('countries', filters.countries.join(','));
+    if (activeFilters.countries.length > 0) {
+      queryParams.set('countries', activeFilters.countries.join(','));
     }
-    if (filters?.decades && filters.decades.length > 0) {
-      queryParams.set('decades', filters.decades.join(','));
+    if (activeFilters.decades.length > 0) {
+      queryParams.set('decades', activeFilters.decades.join(','));
     }
+    queryParams.set('_t', String(Date.now() + 1));
 
-    const res = await fetch(`/api/tmdb/random-movie?${queryParams.toString()}`);
+    const res = await fetch(`/api/tmdb/random-movie?${queryParams.toString()}`, {
+      cache: 'no-store',
+    });
+    if (myGeneration !== prefetchGeneration) return;
+
     if (res.ok) {
       const data = await res.json();
-      if (data.movie) {
+      if (
+        myGeneration === prefetchGeneration &&
+        data?.movie &&
+        !isMovieAlreadyExcluded(data.movie, allExcluded) &&
+        matchesMovieFilters(data.movie, activeFilters)
+      ) {
         cachedNextMovie = data.movie;
-        cachedFiltersKey = buildFilterKey(filters);
+        cachedFiltersKey = targetKey;
       }
     }
   } catch {
     // Ignore prefetch errors
-  } finally {
-    isPrefetching = false;
   }
 }
+

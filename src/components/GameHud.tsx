@@ -6,6 +6,7 @@ import {
   HelpCircle,
   Volume2,
   VolumeX,
+  Pause,
 } from 'lucide-react';
 import { isFilterActive } from '../data/filterOptions';
 
@@ -40,6 +41,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   onOpenStats,
   onOpenHowToPlay,
   onToggleSound,
+  onPause,
   onQuitToTitle,
 }) => {
   const hasActiveFilters = filters ? isFilterActive(filters) : false;
@@ -101,7 +103,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
 
           {/* Right: Navigation Controls */}
-          <nav className="flex items-center gap-5 sm:gap-7 text-[15px] font-medium text-[#FDF5E1]">
+          <nav className="flex items-center gap-4 sm:gap-6 text-[15px] font-medium text-[#FDF5E1]">
             {onOpenFilters && (
               <button
                 type="button"
@@ -138,24 +140,37 @@ export const GameHud: React.FC<GameHudProps> = ({
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={onToggleSound}
-              className="w-11 h-10 rounded-xl bg-[#1A1A19] border border-white/[0.1] hover:border-white/25 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-              aria-label={soundEnabled ? 'Mute sound' : 'Unmute sound'}
-            >
-              {soundEnabled ? (
-                <>
-                  <Volume2 className="w-4 h-4 text-[#FDF5E1]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#EAF18A]" />
-                </>
-              ) : (
-                <>
-                  <VolumeX className="w-4 h-4 text-[#EC5A49]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#EC5A49]" />
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onToggleSound}
+                className="w-11 h-10 rounded-xl bg-[#1A1A19] border border-white/[0.1] hover:border-white/25 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                aria-label={soundEnabled ? 'Mute sound' : 'Unmute sound'}
+                title={soundEnabled ? 'Mute sound' : 'Unmute sound'}
+              >
+                {soundEnabled ? (
+                  <>
+                    <Volume2 className="w-4 h-4 text-[#FDF5E1]" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#EAF18A]" />
+                  </>
+                ) : (
+                  <>
+                    <VolumeX className="w-4 h-4 text-[#EC5A49]" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#EC5A49]" />
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={onPause}
+                className="w-10 h-10 rounded-xl bg-[#1A1A19] border border-white/[0.1] hover:border-white/25 text-[#FDF5E1] hover:text-[#EC5A49] flex items-center justify-center transition-colors cursor-pointer"
+                aria-label="Pause Game"
+                title="Pause"
+              >
+                <Pause className="w-4 h-4" />
+              </button>
+            </div>
           </nav>
         </div>
       </header>

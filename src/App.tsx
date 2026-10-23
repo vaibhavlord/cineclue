@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import { MOVIE_DATABASE, POPULAR_TITLES_CATALOG } from './data/movies';
 import { GameMode, GuessRecord, GameStats, Movie, MovieFilters } from './types/movie';
@@ -26,7 +26,11 @@ import {
   stopSpeaking,
 } from './utils/audio';
 import { Film } from 'lucide-react';
-import { fetchRandomTmdbMovie, prefetchNextTmdbMovie } from './services/tmdbService';
+import {
+  clearMoviePrefetchCache,
+  fetchRandomTmdbMovie,
+  prefetchNextTmdbMovie,
+} from './services/tmdbService';
 import { DEFAULT_FILTERS } from './data/filterOptions';
 import { TitleScreen } from './components/TitleScreen';
 import { GameHud } from './components/GameHud';
@@ -116,32 +120,43 @@ export default function App() {
 
   const [currentMovie, setCurrentMovie] = useState<Movie>(MOVIE_DATABASE[0]);
   const [isLoadingMovie, setIsLoadingMovie] = useState<boolean>(false);
+  const sessionPlayedIds = useRef<Set<string>>(new Set());
 
   // Apply filters handler
   const handleApplyFilters = async (newFilters: MovieFilters) => {
     setFilters(newFilters);
+    clearMoviePrefetchCache();
     try {
       localStorage.setItem('cineclue_filters_v1', JSON.stringify(newFilters));
     } catch {
       // Ignore
     }
 
-    // If currently in active gameplay, re-roll a film that matches the updated filters!
-    if (gameState === 'playing' && gameMode !== 'daily') {
+    // If currently in active gameplay (playing, paused, or post-round modal), load a film matching the updated filters!
+    if ((gameState === 'playing' || gameState === 'paused' || gameState === 'gameover') && gameMode !== 'daily') {
       setIsLoadingMovie(true);
       try {
-        const movie = await fetchRandomTmdbMovie([], newFilters);
+        const excludeList = Array.from(new Set([...sessionPlayedIds.current, currentMovie.id]));
+        const movie = await fetchRandomTmdbMovie(excludeList, newFilters);
         if (movie) {
+          sessionPlayedIds.current.add(movie.id);
           setCurrentMovie(movie);
           setRevealedTiers(1);
           setGuesses([]);
           setUnlockedLetters(new Set());
           setRoundStatus('playing');
           setLastRoundPoints(0);
+          if (gameMode === 'speedrun') {
+            setSpeedrunTimer(15);
+          }
+          setGameState('playing');
         }
       } finally {
         setIsLoadingMovie(false);
       }
+    } else {
+      // On title screen, warm the prefetch cache for the newly selected filters
+      prefetchNextTmdbMovie(Array.from(sessionPlayedIds.current), newFilters);
     }
   };
 
@@ -151,8 +166,11 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       if (params.get('autostart') === '1') {
         setGameState('playing');
-        fetchRandomTmdbMovie([], filters).then((m) => {
-          if (m) setCurrentMovie(m);
+        fetchRandomTmdbMovie(Array.from(sessionPlayedIds.current), filters).then((m) => {
+          if (m) {
+            sessionPlayedIds.current.add(m.id);
+            setCurrentMovie(m);
+          }
         });
       }
     }
@@ -222,8 +240,12 @@ export default function App() {
     setIsLoadingMovie(true);
 
     try {
-      const movie = await fetchRandomTmdbMovie([], filters);
-      if (movie) setCurrentMovie(movie);
+      const excludeList = Array.from(sessionPlayedIds.current);
+      const movie = await fetchRandomTmdbMovie(excludeList, filters);
+      if (movie) {
+        sessionPlayedIds.current.add(movie.id);
+        setCurrentMovie(movie);
+      }
     } finally {
       setIsLoadingMovie(false);
     }
@@ -399,8 +421,11 @@ export default function App() {
 
     setIsLoadingMovie(true);
     try {
-      const nextMovie = await fetchRandomTmdbMovie([currentMovie.id], filters);
+      sessionPlayedIds.current.add(currentMovie.id);
+      const excludeList = Array.from(sessionPlayedIds.current);
+      const nextMovie = await fetchRandomTmdbMovie(excludeList, filters);
       if (nextMovie) {
+        sessionPlayedIds.current.add(nextMovie.id);
         setCurrentMovie(nextMovie);
         setCurrentMovieIndex((prev) => prev + 1);
         setRevealedTiers(1);

@@ -1,4 +1,6 @@
-import { Movie } from '../types/movie';
+import type { Movie } from '../types/movie.ts';
+import { GLOBAL_MOVIES_ARCHIVE } from './globalMoviesArchive.ts';
+import { normalizeTitle } from '../game/rules.ts';
 
 export const CURATED_MOVIES: Movie[] = [
   {
@@ -446,6 +448,7 @@ export const CURATED_MOVIES: Movie[] = [
     title: 'Spirited Away',
     year: 2001,
     decade: '2000s',
+    country: 'JP',
     director: 'Hayao Miyazaki',
     genres: ['Animation', 'Adventure', 'Fantasy'],
     difficulty: 'Cinephile',
@@ -556,6 +559,7 @@ export const CURATED_MOVIES: Movie[] = [
     title: 'Parasite',
     year: 2019,
     decade: '2010s',
+    country: 'KR',
     director: 'Bong Joon-ho',
     genres: ['Thriller', 'Drama', 'Comedy'],
     difficulty: 'Novice',
@@ -611,6 +615,7 @@ export const CURATED_MOVIES: Movie[] = [
     title: 'Alien',
     year: 1979,
     decade: '1970s',
+    country: 'GB',
     director: 'Ridley Scott',
     genres: ['Sci-Fi', 'Horror'],
     difficulty: 'Novice',
@@ -1103,13 +1108,27 @@ export const CURATED_MOVIES: Movie[] = [
   },
 ];
 
-// Deduplicate any duplicates if ID matched
-export const MOVIE_DATABASE: Movie[] = CURATED_MOVIES.filter(
-  (m, idx, arr) => arr.findIndex(item => item.id === m.id) === idx
-);
+// Combine curated classics with the multi-country, multi-decade global archive and deduplicate by ID & normalized title
+const seenDatabaseIds = new Set<string>();
+const seenDatabaseTitles = new Set<string>();
+
+export const MOVIE_DATABASE: Movie[] = [
+  ...CURATED_MOVIES.map((m) => ({ ...m, country: m.country || 'US' })),
+  ...GLOBAL_MOVIES_ARCHIVE,
+].filter((m) => {
+  const normId = m.id.trim().replace(/^tmdb-/, '');
+  const normTitle = `${normalizeTitle(m.title)}-${m.year}`;
+  if (seenDatabaseIds.has(m.id) || seenDatabaseIds.has(normId) || seenDatabaseTitles.has(normTitle)) {
+    return false;
+  }
+  seenDatabaseIds.add(m.id);
+  seenDatabaseIds.add(normId);
+  seenDatabaseTitles.add(normTitle);
+  return true;
+});
 
 // Comprehensive list of movie titles for search autocomplete
-export const POPULAR_TITLES_CATALOG = [
+const BASE_POPULAR_TITLES = [
   { title: 'Inception', year: 2010, genres: ['Sci-Fi', 'Action'] },
   { title: 'The Matrix', year: 1999, genres: ['Sci-Fi', 'Action'] },
   { title: 'Jurassic Park', year: 1993, genres: ['Adventure', 'Sci-Fi'] },
@@ -1223,3 +1242,19 @@ export const POPULAR_TITLES_CATALOG = [
   { title: 'The Batman', year: 2022, genres: ['Action', 'Crime'] },
   { title: 'Spider-Man: Across the Spider-Verse', year: 2023, genres: ['Animation', 'Action'] },
 ];
+
+const seenCatalogTitles = new Set<string>();
+export const POPULAR_TITLES_CATALOG: Array<{ title: string; year: number; genres: string[] }> = [
+  ...BASE_POPULAR_TITLES,
+  ...MOVIE_DATABASE.map((m) => ({
+    title: m.title,
+    year: m.year,
+    genres: m.genres.slice(0, 2),
+  })),
+].filter((item) => {
+  const key = normalizeTitle(item.title);
+  if (!key || seenCatalogTitles.has(key)) return false;
+  seenCatalogTitles.add(key);
+  return true;
+});
+

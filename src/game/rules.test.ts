@@ -10,8 +10,16 @@ import {
   getMaskedTitle,
   getAvailableLetterHints,
   selectDistinctSceneScreenshots,
+  matchesMovieFilters,
+  selectNonRepeatingMovie,
 } from './rules.ts';
-import { isFilterActive, formatFilterSummary, DEFAULT_FILTERS } from '../data/filterOptions.ts';
+import {
+  isFilterActive,
+  formatFilterSummary,
+  DEFAULT_FILTERS,
+  MAJOR_COUNTRIES,
+  DECADE_OPTIONS,
+} from '../data/filterOptions.ts';
 import { MOVIE_DATABASE } from '../data/movies.ts';
 
 test('scoring gives 1000 base points on first clue with 0 incorrect guesses', () => {
@@ -147,8 +155,8 @@ test('selectDistinctSceneScreenshots returns empty array if movie has fewer than
   assert.equal(selected.length, 0);
 });
 
-test('every movie in MOVIE_DATABASE has 5 distinct scene screenshots', () => {
-  assert.ok(MOVIE_DATABASE.length >= 20);
+test('every movie in MOVIE_DATABASE has 5 distinct scene screenshots and valid country code', () => {
+  assert.ok(MOVIE_DATABASE.length >= 180, `Expected at least 180 movies, got ${MOVIE_DATABASE.length}`);
   for (const movie of MOVIE_DATABASE) {
     assert.ok(Array.isArray(movie.screenshots), `${movie.title} must have a screenshots array`);
     assert.equal(movie.screenshots.length, 5, `${movie.title} must have 5 screenshots`);
@@ -157,6 +165,95 @@ test('every movie in MOVIE_DATABASE has 5 distinct scene screenshots', () => {
       5,
       `${movie.title} must have 5 strictly distinct scene screenshot URLs`
     );
+    assert.ok(Boolean(movie.country), `${movie.title} must have a country code`);
   }
 });
+
+test('matchesMovieFilters accurately matches countries and decades including classic (<1970)', () => {
+  const indian2010s = { id: '1', title: '3 Idiots', year: 2009, decade: '2000s', country: 'IN' };
+  const classicUS = { id: '2', title: '12 Angry Men', year: 1957, decade: '1950s', country: 'US' };
+
+  assert.equal(matchesMovieFilters(indian2010s, { countries: ['IN'], decades: [] }), true);
+  assert.equal(matchesMovieFilters(indian2010s, { countries: ['US'], decades: [] }), false);
+  assert.equal(matchesMovieFilters(indian2010s, { countries: ['IN'], decades: ['2000s'] }), true);
+  assert.equal(matchesMovieFilters(indian2010s, { countries: ['IN'], decades: ['1990s'] }), false);
+
+  assert.equal(matchesMovieFilters(classicUS, { countries: ['US'], decades: ['classic'] }), true);
+  assert.equal(matchesMovieFilters(classicUS, { countries: ['US'], decades: ['1970s'] }), false);
+});
+
+test('selectNonRepeatingMovie serves strictly matching, non-repeating movies for every country and decade', () => {
+  // Verify every single country option has multiple movies and never repeats across 8 consecutive rounds
+  for (const country of MAJOR_COUNTRIES) {
+    const seen = new Set<string>();
+    let lastId = '';
+    for (let round = 0; round < 8; round++) {
+      const { movie } = selectNonRepeatingMovie(
+        MOVIE_DATABASE,
+        { countries: [country.code], decades: [] },
+        seen,
+        lastId ? [lastId] : []
+      );
+      assert.equal(
+        movie.country,
+        country.code,
+        `Expected movie country ${country.code}, got ${movie.country} (${movie.title})`
+      );
+      assert.equal(
+        seen.has(movie.id),
+        false,
+        `Movie ${movie.title} (${movie.id}) was repeated on round ${round + 1} for country ${country.code}`
+      );
+      seen.add(movie.id);
+      lastId = movie.id;
+    }
+  }
+
+  // Verify every single decade option has multiple movies and never repeats across 10 consecutive rounds
+  for (const dec of DECADE_OPTIONS) {
+    const seen = new Set<string>();
+    let lastId = '';
+    for (let round = 0; round < 10; round++) {
+      const { movie } = selectNonRepeatingMovie(
+        MOVIE_DATABASE,
+        { countries: [], decades: [dec.id] },
+        seen,
+        lastId ? [lastId] : []
+      );
+      assert.equal(
+        matchesMovieFilters(movie, { countries: [], decades: [dec.id] }),
+        true,
+        `Movie ${movie.title} (${movie.year}) did not match decade ${dec.id}`
+      );
+      assert.equal(
+        seen.has(movie.id),
+        false,
+        `Movie ${movie.title} was repeated on round ${round + 1} for decade ${dec.id}`
+      );
+      seen.add(movie.id);
+      lastId = movie.id;
+    }
+  }
+});
+
+test('selectNonRepeatingMovie cycles within the active filter pool without ever leaking unfiltered movies or back-to-back repeats', () => {
+  const smallCatalog = [
+    { id: 'kr-1', title: 'Parasite', year: 2019, decade: '2010s', country: 'KR' },
+    { id: 'kr-2', title: 'Oldboy', year: 2003, decade: '2000s', country: 'KR' },
+    { id: 'us-1', title: 'Inception', year: 2010, decade: '2010s', country: 'US' },
+  ];
+
+  // Both KR movies have been seen, and kr-2 was the immediately preceding movie
+  const result = selectNonRepeatingMovie(
+    smallCatalog,
+    { countries: ['KR'], decades: [] },
+    ['kr-1', 'kr-2'],
+    ['kr-2']
+  );
+
+  assert.equal(result.didCycleFilterPool, true);
+  assert.equal(result.movie.country, 'KR', 'Must preserve KR filter even when pool cycles');
+  assert.equal(result.movie.id, 'kr-1', 'Must not repeat immediately preceding movie kr-2');
+});
+
 
