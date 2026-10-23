@@ -194,6 +194,7 @@ test('selectNonRepeatingMovie serves strictly matching, non-repeating movies for
         seen,
         lastId ? [lastId] : []
       );
+      assert.ok(movie, `Expected eligible movie for country ${country.code}`);
       assert.equal(
         movie.country,
         country.code,
@@ -228,6 +229,7 @@ test('selectNonRepeatingMovie serves strictly matching, non-repeating movies for
         seen,
         recentOrder.slice(-8)
       );
+      assert.ok(movie, `Expected eligible movie for decade ${dec.id}`);
       assert.equal(
         matchesMovieFilters(movie, { countries: [], decades: [dec.id] }),
         true,
@@ -254,8 +256,12 @@ test('selectNonRepeatingMovie serves strictly matching, non-repeating movies for
           MOVIE_DATABASE,
           filter,
           seen,
-          lastId ? [lastId] : []
+          lastId ? [lastId] : [],
+          Math.random,
+          [],
+          { allowCycle: true }
         );
+        assert.ok(movie, `Expected movie for ${country.code} + ${dec.id}`);
         assert.equal(
           matchesMovieFilters(movie, filter),
           true,
@@ -278,7 +284,43 @@ test('selectNonRepeatingMovie serves strictly matching, non-repeating movies for
   }
 });
 
-test('selectNonRepeatingMovie cycles within the active filter pool without ever leaking unfiltered movies or back-to-back repeats', () => {
+test('selectNonRepeatingMovie returns null/exhausted when all movies in filter pool are seen and allowCycle is false', () => {
+  const smallCatalog = [
+    { id: 'kr-1', title: 'Parasite', year: 2019, decade: '2010s', country: 'KR' },
+    { id: 'kr-2', title: 'Oldboy', year: 2003, decade: '2000s', country: 'KR' },
+    { id: 'us-1', title: 'Inception', year: 2010, decade: '2010s', country: 'US' },
+  ];
+
+  // Both KR movies have been seen
+  const result = selectNonRepeatingMovie(
+    smallCatalog,
+    { countries: ['KR'], decades: [] },
+    ['kr-1', 'kr-2']
+  );
+
+  assert.equal(result.movie, null);
+  assert.equal(result.exhausted, true);
+  assert.equal(result.didCycleFilterPool, false);
+});
+
+test('selectNonRepeatingMovie strictly refuses to return non-matching movies when filter pool is empty', () => {
+  const smallCatalog = [
+    { id: 'us-1', title: 'Inception', year: 2010, decade: '2010s', country: 'US' },
+    { id: 'gb-1', title: 'Skyfall', year: 2012, decade: '2010s', country: 'GB' },
+  ];
+
+  const result = selectNonRepeatingMovie(
+    smallCatalog,
+    { countries: ['JP'], decades: ['classic'] },
+    []
+  );
+
+  assert.equal(result.movie, null);
+  assert.equal(result.exhausted, true);
+  assert.equal(result.filterPoolIds.length, 0);
+});
+
+test('selectNonRepeatingMovie cycles within the active filter pool when allowCycle is explicitly enabled', () => {
   const smallCatalog = [
     { id: 'kr-1', title: 'Parasite', year: 2019, decade: '2010s', country: 'KR' },
     { id: 'kr-2', title: 'Oldboy', year: 2003, decade: '2000s', country: 'KR' },
@@ -290,13 +332,18 @@ test('selectNonRepeatingMovie cycles within the active filter pool without ever 
     smallCatalog,
     { countries: ['KR'], decades: [] },
     ['kr-1', 'kr-2'],
-    ['kr-2']
+    ['kr-2'],
+    Math.random,
+    [],
+    { allowCycle: true }
   );
 
+  assert.ok(result.movie);
   assert.equal(result.didCycleFilterPool, true);
   assert.equal(result.movie.country, 'KR', 'Must preserve KR filter even when pool cycles');
   assert.equal(result.movie.id, 'kr-1', 'Must not repeat immediately preceding movie kr-2');
 });
+
 
 
 

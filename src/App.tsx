@@ -15,6 +15,7 @@ import {
   calculateStarRating,
   getAvailableLetterHints,
   matchesMovieFilters,
+  normalizeTitle,
   selectNonRepeatingMovie,
 } from './game/rules';
 import {
@@ -32,6 +33,7 @@ import {
   clearMoviePrefetchCache,
   fetchRandomTmdbMovie,
   prefetchNextTmdbMovie,
+  resetSeenMovies,
 } from './services/tmdbService';
 import { DEFAULT_FILTERS } from './data/filterOptions';
 import { TitleScreen } from './components/TitleScreen';
@@ -43,6 +45,7 @@ import { StatsModal } from './components/StatsModal';
 import { HowToPlayModal } from './components/HowToPlayModal';
 import { TmdbInfoModal } from './components/TmdbInfoModal';
 import { FilterModal } from './components/FilterModal';
+import { ExhaustedPoolModal } from './components/ExhaustedPoolModal';
 
 const STATS_STORAGE_KEY = 'cineclue_stats_v1';
 const MAX_GUESSES_PER_ROUND = 5;
@@ -81,6 +84,7 @@ export default function App() {
   const [showHowToPlayModal, setShowHowToPlayModal] = useState<boolean>(false);
   const [showTmdbModal, setShowTmdbModal] = useState<boolean>(false);
   const [showFilterModal, setShowFilterModal] = useState<boolean>(false);
+  const [showExhaustedModal, setShowExhaustedModal] = useState<boolean>(false);
   const [speedrunTimer, setSpeedrunTimer] = useState<number>(15);
 
   // Filter state persisted in localStorage
@@ -125,16 +129,28 @@ export default function App() {
     filtersRef.current = filters;
   }, [filters]);
 
-  const [currentMovie, setCurrentMovie] = useState<Movie>(
-    () => selectNonRepeatingMovie(MOVIE_DATABASE, filters, []).movie
-  );
+  const [currentMovie, setCurrentMovie] = useState<Movie>(() => {
+    const { movie } = selectNonRepeatingMovie(MOVIE_DATABASE, filters, []);
+    return movie || MOVIE_DATABASE[0];
+  });
   const [isLoadingMovie, setIsLoadingMovie] = useState<boolean>(false);
   const sessionPlayedIds = useRef<Set<string>>(new Set());
+  const sessionPlayedTitles = useRef<Set<string>>(new Set());
 
-  const recordSessionMovie = useCallback((id: string) => {
-    if (!id) return;
-    sessionPlayedIds.current.delete(id);
-    sessionPlayedIds.current.add(id);
+  const recordSessionMovie = useCallback((movieOrId: Movie | string, maybeTitle?: string) => {
+    const id = typeof movieOrId === 'string' ? movieOrId : movieOrId?.id;
+    const title = typeof movieOrId === 'string' ? maybeTitle : movieOrId?.title;
+    if (id && id.trim()) {
+      const trimmed = id.trim();
+      const clean = trimmed.replace(/^tmdb-/, '');
+      sessionPlayedIds.current.add(trimmed);
+      sessionPlayedIds.current.add(clean);
+      sessionPlayedIds.current.add(`tmdb-${clean}`);
+    }
+    if (title && title.trim()) {
+      const norm = normalizeTitle(title);
+      if (norm) sessionPlayedTitles.current.add(norm);
+    }
   }, []);
 
   // Apply filters handler
@@ -152,11 +168,12 @@ export default function App() {
     if ((gameState === 'playing' || gameState === 'paused' || gameState === 'gameover') && gameMode !== 'daily') {
       setIsLoadingMovie(true);
       try {
-        recordSessionMovie(currentMovie.id);
+        recordSessionMovie(currentMovie);
         const excludeList = Array.from(sessionPlayedIds.current);
-        const movie = await fetchRandomTmdbMovie(excludeList, newFilters);
+        const excludeTitles = Array.from(sessionPlayedTitles.current);
+        const movie = await fetchRandomTmdbMovie(excludeList, newFilters, excludeTitles);
         if (movie) {
-          recordSessionMovie(movie.id);
+          recordSessionMovie(movie);
           setCurrentMovie(movie);
           setRevealedTiers(1);
           setGuesses([]);
@@ -167,23 +184,17 @@ export default function App() {
             setSpeedrunTimer(15);
           }
           setGameState('playing');
+        } else {
+          setShowExhaustedModal(true);
         }
       } finally {
         setIsLoadingMovie(false);
       }
     } else {
-      // On title screen, ensure currentMovie matches newFilters and warm the prefetch cache
-      if (!matchesMovieFilters(currentMovie, newFilters)) {
-        const excludeList = Array.from(sessionPlayedIds.current);
-        const { movie: matchingInitial } = selectNonRepeatingMovie(
-          MOVIE_DATABASE,
-          newFilters,
-          excludeList,
-          excludeList.slice(-6)
-        );
-        setCurrentMovie(matchingInitial);
-      }
-      prefetchNextTmdbMovie(Array.from(sessionPlayedIds.current), newFilters);
+      // On title screen, prefetch next movie matching updated filters
+      const excludeList = Array.from(sessionPlayedIds.current);
+      const excludeTitles = Array.from(sessionPlayedTitles.current);
+      prefetchNextTmdbMovie(excludeList, newFilters, excludeTitles);
     }
   };
 
@@ -192,11 +203,15 @@ export default function App() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       if (params.get('autostart') === '1') {
-        setGameState('playing');
-        fetchRandomTmdbMovie(Array.from(sessionPlayedIds.current), filtersRef.current).then((m) => {
+        const excludeList = Array.from(sessionPlayedIds.current);
+        const excludeTitles = Array.from(sessionPlayedTitles.current);
+        fetchRandomTmdbMovie(excludeList, filtersRef.current, excludeTitles).then((m) => {
           if (m) {
-            recordSessionMovie(m.id);
+            recordSessionMovie(m);
             setCurrentMovie(m);
+            setGameState('playing');
+          } else {
+            setShowExhaustedModal(true);
           }
         });
       }
@@ -254,25 +269,28 @@ export default function App() {
   const handleStartGame = async (mode: GameMode) => {
     playProjectorClick();
     const activeFilters = filtersRef.current;
-    setGameMode(mode);
-    setCurrentMovieIndex(0);
-    setRevealedTiers(1);
-    setGuesses([]);
-    setUnlockedLetters(new Set());
-    setRoundStatus('playing');
-    setLastRoundPoints(0);
-    if (mode === 'speedrun') {
-      setSpeedrunTimer(15);
-    }
-    setGameState('playing');
     setIsLoadingMovie(true);
 
     try {
       const excludeList = Array.from(sessionPlayedIds.current);
-      const movie = await fetchRandomTmdbMovie(excludeList, activeFilters);
+      const excludeTitles = Array.from(sessionPlayedTitles.current);
+      const movie = await fetchRandomTmdbMovie(excludeList, activeFilters, excludeTitles);
       if (movie) {
-        recordSessionMovie(movie.id);
+        recordSessionMovie(movie);
         setCurrentMovie(movie);
+        setGameMode(mode);
+        setCurrentMovieIndex(0);
+        setRevealedTiers(1);
+        setGuesses([]);
+        setUnlockedLetters(new Set());
+        setRoundStatus('playing');
+        setLastRoundPoints(0);
+        if (mode === 'speedrun') {
+          setSpeedrunTimer(15);
+        }
+        setGameState('playing');
+      } else {
+        setShowExhaustedModal(true);
       }
     } finally {
       setIsLoadingMovie(false);
@@ -449,11 +467,12 @@ export default function App() {
 
     setIsLoadingMovie(true);
     try {
-      recordSessionMovie(currentMovie.id);
+      recordSessionMovie(currentMovie);
       const excludeList = Array.from(sessionPlayedIds.current);
-      const nextMovie = await fetchRandomTmdbMovie(excludeList, filtersRef.current);
+      const excludeTitles = Array.from(sessionPlayedTitles.current);
+      const nextMovie = await fetchRandomTmdbMovie(excludeList, filtersRef.current, excludeTitles);
       if (nextMovie) {
-        recordSessionMovie(nextMovie.id);
+        recordSessionMovie(nextMovie);
         setCurrentMovie(nextMovie);
         setCurrentMovieIndex((prev) => prev + 1);
         setRevealedTiers(1);
@@ -465,6 +484,8 @@ export default function App() {
           setSpeedrunTimer(15);
         }
         setGameState('playing');
+      } else {
+        setShowExhaustedModal(true);
       }
     } finally {
       setIsLoadingMovie(false);
@@ -490,7 +511,11 @@ export default function App() {
           soundEnabled={soundOn}
           onToggleSound={handleToggleSound}
           isModalOpen={
-            showFilterModal || showStatsModal || showHowToPlayModal || showTmdbModal
+            showFilterModal ||
+            showStatsModal ||
+            showHowToPlayModal ||
+            showTmdbModal ||
+            showExhaustedModal
           }
         />
       )}
@@ -607,6 +632,56 @@ export default function App() {
           currentFilters={filters}
           onApplyFilters={handleApplyFilters}
           onClose={() => setShowFilterModal(false)}
+        />
+      )}
+
+      {/* Exhausted Movie Pool Modal */}
+      {showExhaustedModal && (
+        <ExhaustedPoolModal
+          currentFilters={filters}
+          onClearFilters={async () => {
+            setShowExhaustedModal(false);
+            await handleApplyFilters(DEFAULT_FILTERS);
+          }}
+          onOpenFilters={() => {
+            setShowExhaustedModal(false);
+            setShowFilterModal(true);
+          }}
+          onResetSeen={async () => {
+            setShowExhaustedModal(false);
+            sessionPlayedIds.current.clear();
+            sessionPlayedTitles.current.clear();
+            resetSeenMovies();
+            if (gameState === 'title') {
+              handleStartGame(gameMode);
+            } else {
+              setIsLoadingMovie(true);
+              try {
+                const movie = await fetchRandomTmdbMovie([], filtersRef.current, []);
+                if (movie) {
+                  recordSessionMovie(movie);
+                  setCurrentMovie(movie);
+                  setRevealedTiers(1);
+                  setGuesses([]);
+                  setUnlockedLetters(new Set());
+                  setRoundStatus('playing');
+                  setLastRoundPoints(0);
+                  setGameState('playing');
+                }
+              } finally {
+                setIsLoadingMovie(false);
+              }
+            }
+          }}
+          onQuitToTitle={
+            gameState !== 'title'
+              ? () => {
+                  setShowExhaustedModal(false);
+                  stopSpeaking();
+                  setGameState('title');
+                }
+              : undefined
+          }
         />
       )}
     </div>

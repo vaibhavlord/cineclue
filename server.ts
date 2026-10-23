@@ -626,7 +626,7 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
   // Built-in Multi-Country & Multi-Decade Archive Fallback (ensures 100% uptime across all deployed devices)
   try {
     const immediateExcludes = combinedExcludeList.slice(-8);
-    const { movie, didCycleFilterPool, filterPoolIds } = selectNonRepeatingMovie(
+    const { movie, didCycleFilterPool, filterPoolIds, exhausted } = selectNonRepeatingMovie(
       MOVIE_DATABASE,
       filterCriteria,
       combinedExcludeList,
@@ -634,12 +634,18 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
       Math.random,
       combinedExcludeTitles
     );
-    if (didCycleFilterPool) {
-      recentServedIdsByFilter.delete(filterKey);
-      recentServedTitlesByFilter.delete(filterKey);
+    if (movie) {
+      recordServerServedMovie(filterKey, movie.id, movie.title, maxServerHistoryForFilter);
+      res.json({ movie, didCycleFilterPool: false, filterPoolIds, exhausted: false });
+    } else {
+      res.json({
+        movie: null,
+        didCycleFilterPool: false,
+        filterPoolIds: [],
+        exhausted: true,
+        message: 'No unused movies match the selected filters',
+      });
     }
-    recordServerServedMovie(filterKey, movie.id, movie.title, maxServerHistoryForFilter);
-    res.json({ movie, didCycleFilterPool, filterPoolIds });
   } catch (err: any) {
     console.error('Error selecting fallback archive movie:', err);
     res.status(500).json({ error: 'Failed to generate movie challenge' });
