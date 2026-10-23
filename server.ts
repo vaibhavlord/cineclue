@@ -1,8 +1,7 @@
-import express, { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import {
   matchesMovieFilters,
   selectDistinctSceneScreenshots,
@@ -540,6 +539,7 @@ async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
 
   if (!isProd) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -552,8 +552,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, () => {
-    console.log(`CineClue server running on http://localhost:${PORT}`);
+  app.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`CineClue server running on http://0.0.0.0:${PORT}`);
   });
 }
 
