@@ -576,7 +576,12 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
   };
 
   const filterKey = `${[...selectedCountries].sort().join(',')}|${[...selectedDecades].sort().join(',')}`;
-  const maxServerHistoryForFilter = 60;
+  const maxServerHistoryForFilter = 500;
+
+  if (body.resetSeenPool === true) {
+    recentServedIdsByFilter.delete(filterKey);
+    recentServedTitlesByFilter.delete(filterKey);
+  }
 
   const serverRecentIds = (recentServedIdsByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
   const serverRecentTitles = (recentServedTitlesByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
@@ -1165,15 +1170,6 @@ async function fetchRandomTmdbRoundMovie(
     await harvestCandidates(0, excludeIds, 6);
   }
 
-  // If candidate pool was exhausted by session exclusions, relax exclusions to avoid blocking the player!
-  if (candidatePool.length < 3 && excludeIds.size > 0) {
-    const recentOnly = new Set(Array.from(excludeIds).slice(-3));
-    await harvestCandidates(0, recentOnly, 8);
-  }
-  if (candidatePool.length === 0) {
-    await harvestCandidates(0, new Set(), 8);
-  }
-
   // Shuffle candidates thoroughly
   for (let i = candidatePool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -1318,7 +1314,12 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
     .filter((d) => Boolean(DECADE_DATE_RANGES[d]));
 
   const filterKey = `${[...selectedCountries].sort().join(',')}|${[...selectedDecades].sort().join(',')}`;
-  const maxServerHistoryForFilter = 60;
+  const maxServerHistoryForFilter = 500;
+
+  if (body.resetSeenPool === true) {
+    recentServedIdsByFilter.delete(filterKey);
+    recentServedTitlesByFilter.delete(filterKey);
+  }
 
   const serverRecentIds = (recentServedIdsByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
   const serverRecentTitles = (recentServedTitlesByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
@@ -1334,7 +1335,15 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
     ])
   );
 
-  const apiKey = process.env.TMDB_API_KEY;
+  const apiKey = process.env.TMDB_API_KEY?.trim();
+  if (!apiKey) {
+    res.status(503).json({
+      error: 'TMDB_API_KEY is not configured on the server.',
+      code: 'TMDB_API_KEY_MISSING',
+    });
+    return;
+  }
+
   let selectedMovie: {
     movieId: number | string;
     title: string;
@@ -1349,71 +1358,25 @@ app.all('/api/game/round/new', gameRateLimitMiddleware, async (req: Request, res
     clueImages: string[];
   } | null = null;
 
-  if (apiKey && apiKey.trim().length > 0) {
-    try {
-      selectedMovie = await fetchRandomTmdbRoundMovie(
-        selectedCountries,
-        selectedDecades,
-        clientExcludeIds,
-        combinedExcludeTitles,
-        apiKey.trim(),
-        8
-      );
-
-      // If session exclusions exhausted candidates, automatically retry from TMDB with relaxed exclusions!
-      if (!selectedMovie) {
-        selectedMovie = await fetchRandomTmdbRoundMovie(
-          selectedCountries,
-          selectedDecades,
-          new Set(Array.from(clientExcludeIds).slice(-3)),
-          new Set(),
-          apiKey.trim(),
-          12
-        );
-      }
-    } catch (tmdbErr) {
-      console.error('Error fetching live TMDB round movie:', tmdbErr);
-    }
+  try {
+    selectedMovie = await fetchRandomTmdbRoundMovie(
+      selectedCountries,
+      selectedDecades,
+      clientExcludeIds,
+      combinedExcludeTitles,
+      apiKey,
+      8
+    );
+  } catch (tmdbErr) {
+    console.error('Error fetching live TMDB round movie:', tmdbErr);
   }
 
-  // Graceful fallback to verified built-in archive if TMDB is offline or apiKey not set
   if (!selectedMovie) {
-    const { movie } = selectNonRepeatingMovie(
-      MOVIE_DATABASE,
-      { countries: selectedCountries, decades: selectedDecades },
-      combinedExcludeList,
-      [],
-      Math.random,
-      combinedExcludeTitles,
-      { allowCycle: true }
-    );
-
-    let fallbackMovie = movie;
-    if (!fallbackMovie) {
-      // Find matching movie from MOVIE_DATABASE
-      const matching = MOVIE_DATABASE.filter((m) =>
-        matchesMovieFilters(m, { countries: selectedCountries, decades: selectedDecades })
-      );
-      fallbackMovie = matching.length > 0 ? matching[Math.floor(Math.random() * matching.length)] : MOVIE_DATABASE[0];
-    }
-
-    const w780Screenshots = (fallbackMovie.screenshots || []).map((s) =>
-      s.replace(/\/p\/w1280\//, '/p/w780/')
-    );
-
-    selectedMovie = {
-      movieId: fallbackMovie.id,
-      title: fallbackMovie.title,
-      year: fallbackMovie.year,
-      decade: fallbackMovie.decade,
-      country: fallbackMovie.country || (selectedCountries[0] || 'US'),
-      director: fallbackMovie.director,
-      overview: fallbackMovie.boxOfficeTrivia?.secretTrivia || '',
-      posterUrl: fallbackMovie.posterUrl || null,
-      backdropUrl: w780Screenshots[4] || null,
-      genres: fallbackMovie.genres || ['Drama'],
-      clueImages: w780Screenshots,
-    };
+    res.status(503).json({
+      error: 'TMDB did not return a new movie matching the selected filters.',
+      code: 'TMDB_MOVIE_UNAVAILABLE',
+    });
+    return;
   }
 
   // Record served movie to prevent repeats in the session
