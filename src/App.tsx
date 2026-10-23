@@ -205,8 +205,8 @@ export default function App() {
         }
         setGameState('playing');
       } catch (err) {
-        console.warn('Unable to load a movie for the selected filters:', err);
-        setShowExhaustedModal(true);
+        console.warn('Unable to load a movie for the selected filters from TMDB:', err);
+        setGuessFeedbackMessage('TMDB could not provide a movie for these filters. Check the API connection or adjust the filters.');
       } finally {
         setIsLoadingMovie(false);
       }
@@ -236,8 +236,8 @@ export default function App() {
             }
           })
           .catch((err) => {
-            console.warn('Autostart could not load a movie:', err);
-            setShowExhaustedModal(true);
+            console.warn('Autostart could not load a movie from TMDB:', err);
+            setShowTmdbModal(true);
           });
       }
     }
@@ -321,8 +321,8 @@ export default function App() {
       }
       setGameState('playing');
     } catch (err) {
-      console.warn('Unable to start a movie round:', err);
-      setShowExhaustedModal(true);
+      console.warn('Unable to start a movie round from TMDB:', err);
+      setShowTmdbModal(true);
     } finally {
       setIsLoadingMovie(false);
     }
@@ -568,8 +568,8 @@ export default function App() {
       }
       setGameState('playing');
     } catch (err) {
-      console.warn('Unable to load the next movie:', err);
-      setShowExhaustedModal(true);
+      console.warn('Unable to load the next movie from TMDB:', err);
+      setGuessFeedbackMessage('Could not load a new movie from TMDB. Please try again.');
     } finally {
       setIsLoadingMovie(false);
     }
