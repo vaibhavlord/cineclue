@@ -1,7 +1,14 @@
 import { Movie, MovieFilters } from '../types/movie';
 import { MOVIE_DATABASE } from '../data/movies';
-import { DEFAULT_FILTERS } from '../data/filterOptions';
-import { matchesMovieFilters, normalizeTitle, selectNonRepeatingMovie } from '../game/rules';
+import {
+  matchesMovieFilters,
+  normalizeTitle,
+  selectNonRepeatingMovie,
+  checkTitleMatch,
+  compareReleaseYear,
+  findMatchingGenres,
+  calculateScore,
+} from '../game/rules';
 
 const SEEN_MOVIES_STORAGE_KEY = 'cineclue_seen_tmdb_ids_v1';
 const SEEN_TITLES_STORAGE_KEY = 'cineclue_seen_titles_v1';
@@ -488,8 +495,66 @@ export function preloadClueImages(urls: string[]): void {
   });
 }
 
+// In-memory store for offline / static client rounds when server backend is unavailable
+const localActiveRounds = new Map<
+  string,
+  {
+    movie: Movie;
+    revealedClues: number;
+    guessesCount: number;
+    solved: boolean;
+    forfeited: boolean;
+  }
+>();
+
+function createLocalFallbackRound(
+  filters: MovieFilters = DEFAULT_FILTERS,
+  allExcluded: string[] = [],
+  allExcludedTitles: string[] = []
+): PublicRoundData {
+  const { movie } = selectNonRepeatingMovie(
+    MOVIE_DATABASE,
+    filters,
+    allExcluded,
+    [],
+    Math.random,
+    allExcludedTitles,
+    { allowCycle: true }
+  );
+
+  const fallback =
+    movie ||
+    MOVIE_DATABASE.find((m) => matchesMovieFilters(m, filters)) ||
+    MOVIE_DATABASE[Math.floor(Math.random() * MOVIE_DATABASE.length)];
+
+  const roundId = `local-${fallback.id}-${Date.now()}`;
+  localActiveRounds.set(roundId, {
+    movie: fallback,
+    revealedClues: 1,
+    guessesCount: 0,
+    solved: false,
+    forfeited: false,
+  });
+
+  const screenshots = (fallback.screenshots || []).map((s) =>
+    s.replace(/\/p\/w1280\//, '/p/w780/')
+  );
+
+  return {
+    roundId,
+    totalClues: 5,
+    revealedClues: 1,
+    maxGuesses: 5,
+    remainingGuesses: 5,
+    imageUrls: screenshots,
+    decade: fallback.decade,
+    country: fallback.country || 'US',
+    genres: fallback.genres || ['Drama'],
+  };
+}
+
 /**
- * Starts a new random movie round via server endpoint.
+ * Starts a new random movie round via server endpoint with seamless offline fallback.
  * Secret movie title, ID, and answer metadata are never exposed in the response.
  */
 export async function startNewGameRound(
@@ -504,67 +569,153 @@ export async function startNewGameRound(
     new Set([...seenTitles, ...customExcludeTitles.map(normalizeTitle).filter(Boolean)])
   );
 
-  let res = await fetch('/api/game/round/new', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      excludeIds: allExcluded.slice(-140),
-      excludeTitles: allExcludedTitles.slice(-50),
-      countries: filters.countries || [],
-      decades: filters.decades || [],
-    }),
-  });
-
-  // If initial attempt with exclusions did not succeed, auto-retry with fresh exclusions from TMDB
-  if (!res.ok) {
-    res = await fetch('/api/game/round/new', {
+  try {
+    let res = await fetch('/api/game/round/new', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        excludeIds: [],
-        excludeTitles: [],
+        excludeIds: allExcluded.slice(-140),
+        excludeTitles: allExcludedTitles.slice(-50),
         countries: filters.countries || [],
         decades: filters.decades || [],
       }),
     });
+
+    // If initial attempt with exclusions did not succeed, auto-retry with fresh exclusions from TMDB
+    if (!res.ok) {
+      res = await fetch('/api/game/round/new', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          excludeIds: [],
+          excludeTitles: [],
+          countries: filters.countries || [],
+          decades: filters.decades || [],
+        }),
+      });
+    }
+
+    if (res.ok) {
+      const data: PublicRoundData = await res.json();
+      if (Array.isArray(data.imageUrls)) {
+        preloadClueImages(data.imageUrls);
+      }
+      return data;
+    }
+  } catch (err) {
+    console.warn('Backend server /api/game/round/new unreachable, using resilient offline round:', err);
   }
 
-  if (!res.ok) {
-    throw new Error(`Failed to start game round: ${res.statusText}`);
+  // Resilient fallback: seamlessly starts round from curated archive so playing NEVER fails
+  const localRound = createLocalFallbackRound(filters, allExcluded, allExcludedTitles);
+  if (Array.isArray(localRound.imageUrls)) {
+    preloadClueImages(localRound.imageUrls);
   }
-
-  const data: PublicRoundData = await res.json();
-
-  // Preload all 5 backdrop clues in background without displaying them early
-  if (Array.isArray(data.imageUrls)) {
-    preloadClueImages(data.imageUrls);
-  }
-
-  return data;
+  return localRound;
 }
 
 /**
  * Unlocks the next clue image (clues 2 through 5)
  */
 export async function revealNextRoundClue(roundId: string): Promise<RevealClueResult> {
-  const res = await fetch('/api/game/round/reveal-clue', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ roundId }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Failed to reveal next clue: ${res.statusText}`);
+  if (roundId.startsWith('local-')) {
+    const round = localActiveRounds.get(roundId);
+    if (!round) throw new Error('Round expired');
+    round.revealedClues = Math.min(5, (round.revealedClues || 1) + 1);
+    return {
+      revealedClues: round.revealedClues,
+      totalClues: 5,
+      remainingClues: Math.max(0, 5 - round.revealedClues),
+      isFinished: round.solved || round.forfeited,
+    };
   }
 
-  return res.json();
+  try {
+    const res = await fetch('/api/game/round/reveal-clue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roundId }),
+    });
+
+    if (res.ok) {
+      return res.json();
+    }
+  } catch {
+    // Ignore and fallback
+  }
+
+  return {
+    revealedClues: 5,
+    totalClues: 5,
+    remainingClues: 0,
+    isFinished: false,
+  };
 }
 
 /**
- * Submits player guess to server for case-insensitive normalized validation.
+ * Submits player guess for case-insensitive normalized validation.
  * Answer is only returned when round ends (won or out of guesses).
  */
 export async function submitRoundGuess(roundId: string, guess: string): Promise<GuessResult> {
+  if (roundId.startsWith('local-')) {
+    const round = localActiveRounds.get(roundId);
+    if (!round) throw new Error('Round expired');
+    if (round.solved || round.forfeited) {
+      return {
+        isCorrect: false,
+        isGameOver: true,
+        remainingGuesses: 0,
+        revealedClues: round.revealedClues,
+        message: 'Round has already concluded.',
+      };
+    }
+
+    round.guessesCount = (round.guessesCount || 0) + 1;
+    const isCorrect = checkTitleMatch(guess, round.movie.title);
+
+    if (isCorrect) {
+      round.solved = true;
+      const points = calculateScore({
+        clueTierRevealed: round.revealedClues,
+        incorrectGuesses: round.guessesCount - 1,
+        streakCount: 1,
+      });
+      markMovieAsSeen(round.movie.id, round.movie.title);
+      return {
+        isCorrect: true,
+        isGameOver: true,
+        pointsEarned: points,
+        revealedClues: 5,
+        remainingGuesses: Math.max(0, 5 - round.guessesCount),
+        message: 'Correct! Brilliant deduction!',
+        movie: round.movie,
+      };
+    }
+
+    const isGameOver = round.guessesCount >= 5;
+    if (isGameOver) {
+      round.forfeited = true;
+      markMovieAsSeen(round.movie.id, round.movie.title);
+    } else {
+      round.revealedClues = Math.min(5, (round.revealedClues || 1) + 1);
+    }
+
+    return {
+      isCorrect: false,
+      isGameOver,
+      pointsEarned: 0,
+      revealedClues: round.revealedClues,
+      remainingGuesses: Math.max(0, 5 - round.guessesCount),
+      message: isGameOver ? `Game over. The film was ${round.movie.title}.` : 'Incorrect guess.',
+      movie: isGameOver ? round.movie : undefined,
+      guessRecord: {
+        title: guess,
+        isCorrect: false,
+        guessNumber: round.guessesCount,
+      },
+    };
+  }
+
   const res = await fetch('/api/game/round/guess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -584,6 +735,23 @@ export async function submitRoundGuess(roundId: string, guess: string): Promise<
  * Skips the current round, forfeits score, and reveals the answer.
  */
 export async function skipGameRound(roundId: string): Promise<SkipResult> {
+  if (roundId.startsWith('local-')) {
+    const round = localActiveRounds.get(roundId);
+    if (!round) throw new Error('Round expired');
+    round.forfeited = true;
+    round.revealedClues = 5;
+    markMovieAsSeen(round.movie.id, round.movie.title);
+    return {
+      skipped: true,
+      isGameOver: true,
+      roundStatus: 'lost',
+      pointsEarned: 0,
+      revealedClues: 5,
+      message: 'Round skipped. The film has been revealed.',
+      movie: round.movie,
+    };
+  }
+
   const res = await fetch('/api/game/round/skip', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

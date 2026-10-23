@@ -369,7 +369,40 @@ export default function App() {
           setGameState('playing');
         }
       } catch (innerErr) {
-        console.error('Recovery failed:', innerErr);
+        console.error('Recovery failed, using guaranteed fallback:', innerErr);
+        const { movie } = selectNonRepeatingMovie(
+          MOVIE_DATABASE,
+          activeFilters,
+          [],
+          [],
+          Math.random,
+          [],
+          { allowCycle: true }
+        );
+        const fallback = movie || MOVIE_DATABASE[0];
+        setActiveRound({
+          roundId: `local-${fallback.id}-${Date.now()}`,
+          totalClues: 5,
+          revealedClues: 1,
+          maxGuesses: 5,
+          remainingGuesses: 5,
+          imageUrls: (fallback.screenshots || []).map((s) => s.replace(/\/p\/w1280\//, '/p/w780/')),
+          decade: fallback.decade,
+          country: fallback.country || 'US',
+          genres: fallback.genres || ['Drama'],
+        });
+        setRevealedMovie(null);
+        setGameMode(mode);
+        setCurrentMovieIndex(0);
+        setRevealedTiers(1);
+        setGuesses([]);
+        setUnlockedLetters(new Set());
+        setRoundStatus('playing');
+        setLastRoundPoints(0);
+        if (mode === 'speedrun') {
+          setSpeedrunTimer(15);
+        }
+        setGameState('playing');
       }
     } finally {
       setIsLoadingMovie(false);
