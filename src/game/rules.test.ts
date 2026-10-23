@@ -209,16 +209,24 @@ test('selectNonRepeatingMovie serves strictly matching, non-repeating movies for
     }
   }
 
-  // Verify every single decade option has multiple movies and never repeats across 10 consecutive rounds
+  // Verify every single decade option has at least 60 movies and never repeats across 35 consecutive rounds
   for (const dec of DECADE_OPTIONS) {
+    const matchingDecadeMovies = MOVIE_DATABASE.filter((m) =>
+      matchesMovieFilters(m, { countries: [], decades: [dec.id] })
+    );
+    assert.ok(
+      matchingDecadeMovies.length >= 60,
+      `Expected at least 60 movies for decade ${dec.id}, found ${matchingDecadeMovies.length}`
+    );
+
     const seen = new Set<string>();
-    let lastId = '';
-    for (let round = 0; round < 10; round++) {
+    const recentOrder: string[] = [];
+    for (let round = 0; round < 35; round++) {
       const { movie } = selectNonRepeatingMovie(
         MOVIE_DATABASE,
         { countries: [], decades: [dec.id] },
         seen,
-        lastId ? [lastId] : []
+        recentOrder.slice(-8)
       );
       assert.equal(
         matchesMovieFilters(movie, { countries: [], decades: [dec.id] }),
@@ -231,7 +239,41 @@ test('selectNonRepeatingMovie serves strictly matching, non-repeating movies for
         `Movie ${movie.title} was repeated on round ${round + 1} for decade ${dec.id}`
       );
       seen.add(movie.id);
-      lastId = movie.id;
+      recentOrder.push(movie.id);
+    }
+  }
+
+  // Verify every single (Country, Decade) combination across all 14 countries x 7 decades has strictly matching movies
+  for (const country of MAJOR_COUNTRIES) {
+    for (const dec of DECADE_OPTIONS) {
+      const filter = { countries: [country.code], decades: [dec.id] };
+      const seen = new Set<string>();
+      let lastId = '';
+      for (let round = 0; round < 3; round++) {
+        const { movie, didCycleFilterPool, filterPoolIds } = selectNonRepeatingMovie(
+          MOVIE_DATABASE,
+          filter,
+          seen,
+          lastId ? [lastId] : []
+        );
+        assert.equal(
+          matchesMovieFilters(movie, filter),
+          true,
+          `Expected ${movie.title} (${movie.country}, ${movie.year}) to strictly match ${country.code} + ${dec.id}`
+        );
+        if (lastId && filterPoolIds.length > 1) {
+          assert.notEqual(
+            movie.id,
+            lastId,
+            `Back-to-back repeat for ${country.code} + ${dec.id}: ${movie.title}`
+          );
+        }
+        if (didCycleFilterPool) {
+          seen.clear();
+        }
+        seen.add(movie.id);
+        lastId = movie.id;
+      }
     }
   }
 });
@@ -255,5 +297,6 @@ test('selectNonRepeatingMovie cycles within the active filter pool without ever 
   assert.equal(result.movie.country, 'KR', 'Must preserve KR filter even when pool cycles');
   assert.equal(result.movie.id, 'kr-1', 'Must not repeat immediately preceding movie kr-2');
 });
+
 
 

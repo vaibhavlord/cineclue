@@ -4,7 +4,7 @@ import { normalizeTitle } from '../game/rules.ts';
 
 export const CURATED_MOVIES: Movie[] = [
   {
-    id: 'inception',
+    id: 'tmdb-27205',
     title: 'Inception',
     year: 2010,
     decade: '2010s',
@@ -59,7 +59,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'the-matrix',
+    id: 'tmdb-603',
     title: 'The Matrix',
     year: 1999,
     decade: '1990s',
@@ -114,7 +114,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'jurassic-park',
+    id: 'tmdb-329',
     title: 'Jurassic Park',
     year: 1993,
     decade: '1990s',
@@ -169,7 +169,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'titanic',
+    id: 'tmdb-597',
     title: 'Titanic',
     year: 1997,
     decade: '1990s',
@@ -224,7 +224,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'the-dark-knight',
+    id: 'tmdb-155',
     title: 'The Dark Knight',
     year: 2008,
     decade: '2000s',
@@ -279,7 +279,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'back-to-the-future',
+    id: 'tmdb-105',
     title: 'Back to the Future',
     year: 1985,
     decade: '1980s',
@@ -334,7 +334,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'interstellar',
+    id: 'tmdb-157336',
     title: 'Interstellar',
     year: 2014,
     decade: '2010s',
@@ -389,7 +389,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'pulp-fiction',
+    id: 'tmdb-680',
     title: 'Pulp Fiction',
     year: 1994,
     decade: '1990s',
@@ -444,7 +444,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'spirited-away',
+    id: 'tmdb-129',
     title: 'Spirited Away',
     year: 2001,
     decade: '2000s',
@@ -500,7 +500,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'the-shining',
+    id: 'tmdb-694',
     title: 'The Shining',
     year: 1980,
     decade: '1980s',
@@ -555,7 +555,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'parasite',
+    id: 'tmdb-496243',
     title: 'Parasite',
     year: 2019,
     decade: '2010s',
@@ -611,7 +611,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'alien',
+    id: 'tmdb-348',
     title: 'Alien',
     year: 1979,
     decade: '1970s',
@@ -667,7 +667,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'whiplash',
+    id: 'tmdb-244786',
     title: 'Whiplash',
     year: 2014,
     decade: '2010s',
@@ -722,7 +722,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'the-godfather',
+    id: 'tmdb-238',
     title: 'The Godfather',
     year: 1972,
     decade: '1970s',
@@ -777,7 +777,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'coco',
+    id: 'tmdb-354912',
     title: 'Coco',
     year: 2017,
     decade: '2010s',
@@ -832,7 +832,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'la-la-land',
+    id: 'tmdb-313369',
     title: 'La La Land',
     year: 2016,
     decade: '2010s',
@@ -887,7 +887,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'everything-everywhere-all-at-once',
+    id: 'tmdb-545611',
     title: 'Everything Everywhere All at Once',
     year: 2022,
     decade: '2020s',
@@ -942,7 +942,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'blade-runner-2049',
+    id: 'tmdb-335984',
     title: 'Blade Runner 2049',
     year: 2017,
     decade: '2010s',
@@ -997,7 +997,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'forrest-gump',
+    id: 'tmdb-13',
     title: 'Forrest Gump',
     year: 1994,
     decade: '1990s',
@@ -1052,7 +1052,7 @@ export const CURATED_MOVIES: Movie[] = [
     },
   },
   {
-    id: 'oppenheimer',
+    id: 'tmdb-872585',
     title: 'Oppenheimer',
     year: 2023,
     decade: '2020s',

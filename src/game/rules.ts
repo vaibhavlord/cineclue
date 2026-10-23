@@ -325,8 +325,12 @@ export interface FilterCriteria {
  * Checks whether a movie matches the active Country and Decade filter criteria.
  */
 export function matchesMovieFilters(movie: FilterableMovieItem, filters: FilterCriteria): boolean {
-  const activeCountries = (filters.countries || []).map((c) => c.trim().toUpperCase()).filter(Boolean);
-  const activeDecades = (filters.decades || []).map((d) => d.trim().toLowerCase()).filter(Boolean);
+  const activeCountries = (filters?.countries || [])
+    .map((c) => c.trim().toUpperCase())
+    .filter(Boolean);
+  const activeDecades = (filters?.decades || [])
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
 
   if (activeCountries.length > 0) {
     const movieCountry = (movie.country || 'US').trim().toUpperCase();
@@ -336,12 +340,14 @@ export function matchesMovieFilters(movie: FilterableMovieItem, filters: FilterC
   }
 
   if (activeDecades.length > 0) {
-    const year = movie.year || 2000;
+    const year = Number(movie.year) || 2000;
     const computedDecade = year < 1970 ? 'classic' : `${Math.floor(year / 10) * 10}s`;
     const movieDecadeLower = (movie.decade || '').trim().toLowerCase();
 
     const matchesDecade = activeDecades.some((dec) => {
-      if (dec === 'classic') return year < 1970 || movieDecadeLower === 'classic' || movieDecadeLower === '1960s';
+      if (dec === 'classic' || dec === '1960s') {
+        return year < 1970 || movieDecadeLower === 'classic' || movieDecadeLower === '1960s';
+      }
       return dec === computedDecade || dec === movieDecadeLower;
     });
 
@@ -357,14 +363,15 @@ export function matchesMovieFilters(movie: FilterableMovieItem, filters: FilterC
  * Selects a random non-repeating movie from a catalog while strictly respecting filters.
  * Deduplicates by both ID and normalized movie title.
  * If all movies in the filtered pool have been seen, resets seen status only for that filtered pool
- * while keeping immediateExcludeIds excluded so back-to-back repeats never happen.
+ * while keeping immediateExcludeIds excluded so back-to-back or near repeats never happen.
  */
 export function selectNonRepeatingMovie<T extends FilterableMovieItem>(
   catalog: T[],
   filters: FilterCriteria,
   seenIds: Iterable<string>,
   immediateExcludeIds: Iterable<string> = [],
-  randomFn: () => number = Math.random
+  randomFn: () => number = Math.random,
+  extraExcludedTitles: Iterable<string> = []
 ): { movie: T; didCycleFilterPool: boolean; filterPoolIds: string[] } {
   if (!catalog || catalog.length === 0) {
     throw new Error('Movie catalog cannot be empty');
@@ -373,15 +380,15 @@ export function selectNonRepeatingMovie<T extends FilterableMovieItem>(
   // 1. Determine filtered pool: strict Country + Decade match first
   let filteredPool = catalog.filter((m) => matchesMovieFilters(m, filters));
 
-  // If strict Country + Decade intersection is empty in local catalog, prioritize Country match first, then Decade match
-  if (filteredPool.length === 0 && filters.countries.length > 0) {
-    filteredPool = catalog.filter((m) =>
-      matchesMovieFilters(m, { countries: filters.countries, decades: [] })
-    );
-  }
+  // If strict Country + Decade intersection is empty in local catalog, prioritize Decade match if only decade or both set, then Country match
   if (filteredPool.length === 0 && filters.decades.length > 0) {
     filteredPool = catalog.filter((m) =>
       matchesMovieFilters(m, { countries: [], decades: filters.decades })
+    );
+  }
+  if (filteredPool.length === 0 && filters.countries.length > 0) {
+    filteredPool = catalog.filter((m) =>
+      matchesMovieFilters(m, { countries: filters.countries, decades: [] })
     );
   }
   if (filteredPool.length === 0) {
@@ -394,22 +401,30 @@ export function selectNonRepeatingMovie<T extends FilterableMovieItem>(
   const normalizeId = (id: string) => id.trim().replace(/^tmdb-/, '');
   const seenIdSet = new Set<string>();
   for (const id of seenIds) {
-    if (id) {
+    if (id && id.trim()) {
       seenIdSet.add(id.trim());
       seenIdSet.add(normalizeId(id));
     }
   }
 
+  const immediateList = Array.from(immediateExcludeIds).filter((id) => Boolean(id && id.trim()));
+  // Keep at most half the pool (or up to 10 recent items) in immediate exclusion so cycling never starves small pools
+  const maxImmediateCount = Math.max(1, Math.min(10, Math.floor((filteredPool.length - 1) / 2) || 1));
+  const boundedImmediateList =
+    filteredPool.length <= 1 ? [] : immediateList.slice(-maxImmediateCount);
+
   const immediateIdSet = new Set<string>();
-  for (const id of immediateExcludeIds) {
-    if (id) {
-      immediateIdSet.add(id.trim());
-      immediateIdSet.add(normalizeId(id));
-    }
+  for (const id of boundedImmediateList) {
+    immediateIdSet.add(id.trim());
+    immediateIdSet.add(normalizeId(id));
   }
 
-  // Collect normalized titles of excluded movies from catalog
   const excludedTitles = new Set<string>();
+  for (const t of extraExcludedTitles) {
+    const norm = normalizeTitle(t);
+    if (norm) excludedTitles.add(norm);
+  }
+
   const immediateTitles = new Set<string>();
   for (const m of catalog) {
     const rawId = m.id.trim();
@@ -454,7 +469,7 @@ export function selectNonRepeatingMovie<T extends FilterableMovieItem>(
   let didCycleFilterPool = false;
 
   // If the player has exhausted every movie in this specific filter pool, cycle the filter pool
-  // while still strictly preserving the active filter and avoiding the immediately preceding movie(s)
+  // while still strictly preserving the active filter and avoiding the recently played movie(s)
   if (candidates.length === 0) {
     didCycleFilterPool = true;
     const withoutImmediate = filteredPool.filter((m) => !isImmediateExcluded(m));
@@ -472,5 +487,6 @@ export function selectNonRepeatingMovie<T extends FilterableMovieItem>(
     filterPoolIds,
   };
 }
+
 
 

@@ -14,6 +14,8 @@ import {
   findMatchingGenres,
   calculateStarRating,
   getAvailableLetterHints,
+  matchesMovieFilters,
+  selectNonRepeatingMovie,
 } from './game/rules';
 import {
   isSoundEnabled,
@@ -118,12 +120,26 @@ export default function App() {
     document.body.dataset.state = gameState;
   }, [gameState]);
 
-  const [currentMovie, setCurrentMovie] = useState<Movie>(MOVIE_DATABASE[0]);
+  const filtersRef = useRef<MovieFilters>(filters);
+  useEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
+
+  const [currentMovie, setCurrentMovie] = useState<Movie>(
+    () => selectNonRepeatingMovie(MOVIE_DATABASE, filters, []).movie
+  );
   const [isLoadingMovie, setIsLoadingMovie] = useState<boolean>(false);
   const sessionPlayedIds = useRef<Set<string>>(new Set());
 
+  const recordSessionMovie = useCallback((id: string) => {
+    if (!id) return;
+    sessionPlayedIds.current.delete(id);
+    sessionPlayedIds.current.add(id);
+  }, []);
+
   // Apply filters handler
   const handleApplyFilters = async (newFilters: MovieFilters) => {
+    filtersRef.current = newFilters;
     setFilters(newFilters);
     clearMoviePrefetchCache();
     try {
@@ -136,10 +152,11 @@ export default function App() {
     if ((gameState === 'playing' || gameState === 'paused' || gameState === 'gameover') && gameMode !== 'daily') {
       setIsLoadingMovie(true);
       try {
-        const excludeList = Array.from(new Set([...sessionPlayedIds.current, currentMovie.id]));
+        recordSessionMovie(currentMovie.id);
+        const excludeList = Array.from(sessionPlayedIds.current);
         const movie = await fetchRandomTmdbMovie(excludeList, newFilters);
         if (movie) {
-          sessionPlayedIds.current.add(movie.id);
+          recordSessionMovie(movie.id);
           setCurrentMovie(movie);
           setRevealedTiers(1);
           setGuesses([]);
@@ -155,7 +172,17 @@ export default function App() {
         setIsLoadingMovie(false);
       }
     } else {
-      // On title screen, warm the prefetch cache for the newly selected filters
+      // On title screen, ensure currentMovie matches newFilters and warm the prefetch cache
+      if (!matchesMovieFilters(currentMovie, newFilters)) {
+        const excludeList = Array.from(sessionPlayedIds.current);
+        const { movie: matchingInitial } = selectNonRepeatingMovie(
+          MOVIE_DATABASE,
+          newFilters,
+          excludeList,
+          excludeList.slice(-6)
+        );
+        setCurrentMovie(matchingInitial);
+      }
       prefetchNextTmdbMovie(Array.from(sessionPlayedIds.current), newFilters);
     }
   };
@@ -166,15 +193,15 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       if (params.get('autostart') === '1') {
         setGameState('playing');
-        fetchRandomTmdbMovie(Array.from(sessionPlayedIds.current), filters).then((m) => {
+        fetchRandomTmdbMovie(Array.from(sessionPlayedIds.current), filtersRef.current).then((m) => {
           if (m) {
-            sessionPlayedIds.current.add(m.id);
+            recordSessionMovie(m.id);
             setCurrentMovie(m);
           }
         });
       }
     }
-  }, []);
+  }, [recordSessionMovie]);
 
   // Timer for Speedrun mode
   useEffect(() => {
@@ -226,6 +253,7 @@ export default function App() {
 
   const handleStartGame = async (mode: GameMode) => {
     playProjectorClick();
+    const activeFilters = filtersRef.current;
     setGameMode(mode);
     setCurrentMovieIndex(0);
     setRevealedTiers(1);
@@ -241,9 +269,9 @@ export default function App() {
 
     try {
       const excludeList = Array.from(sessionPlayedIds.current);
-      const movie = await fetchRandomTmdbMovie(excludeList, filters);
+      const movie = await fetchRandomTmdbMovie(excludeList, activeFilters);
       if (movie) {
-        sessionPlayedIds.current.add(movie.id);
+        recordSessionMovie(movie.id);
         setCurrentMovie(movie);
       }
     } finally {
@@ -421,11 +449,11 @@ export default function App() {
 
     setIsLoadingMovie(true);
     try {
-      sessionPlayedIds.current.add(currentMovie.id);
+      recordSessionMovie(currentMovie.id);
       const excludeList = Array.from(sessionPlayedIds.current);
-      const nextMovie = await fetchRandomTmdbMovie(excludeList, filters);
+      const nextMovie = await fetchRandomTmdbMovie(excludeList, filtersRef.current);
       if (nextMovie) {
-        sessionPlayedIds.current.add(nextMovie.id);
+        recordSessionMovie(nextMovie.id);
         setCurrentMovie(nextMovie);
         setCurrentMovieIndex((prev) => prev + 1);
         setRevealedTiers(1);
@@ -461,6 +489,9 @@ export default function App() {
           currentFilters={filters}
           soundEnabled={soundOn}
           onToggleSound={handleToggleSound}
+          isModalOpen={
+            showFilterModal || showStatsModal || showHowToPlayModal || showTmdbModal
+          }
         />
       )}
 
