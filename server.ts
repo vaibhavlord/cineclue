@@ -578,6 +578,11 @@ app.get('/api/tmdb/random-movie', async (req: Request, res: Response) => {
   const filterKey = `${[...selectedCountries].sort().join(',')}|${[...selectedDecades].sort().join(',')}`;
   const maxServerHistoryForFilter = 500;
 
+  if (body.resetSeenPool === true) {
+    recentServedIdsByFilter.delete(filterKey);
+    recentServedTitlesByFilter.delete(filterKey);
+  }
+
   const serverRecentIds = (recentServedIdsByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
   const serverRecentTitles = (recentServedTitlesByFilter.get(filterKey) || []).slice(-maxServerHistoryForFilter);
 
