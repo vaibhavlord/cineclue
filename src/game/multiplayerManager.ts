@@ -2,6 +2,11 @@ import { RoomState, MultiplayerMovieSafe, MultiplayerPlayer } from '../types/mul
 import { MovieFilters, Movie } from '../types/movie';
 import { MOVIE_DATABASE } from '../data/movies';
 import { checkTitleMatch, matchesMovieFilters } from './rules';
+import {
+  fetchRoomFromFirestore,
+  fetchRoomSecretsFromFirestore,
+  saveRoomToFirestore,
+} from '../services/firebase';
 
 export interface InternalRoomRecord {
   state: RoomState;
@@ -50,10 +55,47 @@ export function sanitizeMovieForClient(movie: Movie): MultiplayerMovieSafe {
   };
 }
 
-export function createMultiplayerRoom(
+async function getInternalRoomRecord(code: string): Promise<InternalRoomRecord | null> {
+  const normCode = code.trim().toUpperCase();
+  const cached = rooms.get(normCode);
+  if (cached) return cached;
+
+  // Try loading from Firestore for stateless serverless functions across instances
+  try {
+    const [remoteState, remoteSecrets] = await Promise.all([
+      fetchRoomFromFirestore(normCode),
+      fetchRoomSecretsFromFirestore(normCode),
+    ]);
+
+    if (remoteState) {
+      const record: InternalRoomRecord = {
+        state: remoteState,
+        secretTitles: remoteSecrets || remoteState.movieList.map((m) => m.tagline?.blank || ''),
+      };
+      rooms.set(normCode, record);
+      return record;
+    }
+  } catch (err) {
+    console.warn('Could not query Firestore for room:', err);
+  }
+
+  return null;
+}
+
+async function persistRoomRecord(record: InternalRoomRecord): Promise<void> {
+  const normCode = record.state.code.trim().toUpperCase();
+  rooms.set(normCode, record);
+  try {
+    await saveRoomToFirestore(record.state, record.secretTitles);
+  } catch (err) {
+    console.warn('Could not persist room record to Firestore:', err);
+  }
+}
+
+export async function createMultiplayerRoom(
   hostName: string,
   filters: MovieFilters = { countries: [], decades: [] }
-): { code: string; playerId: string; room: RoomState } {
+): Promise<{ code: string; playerId: string; room: RoomState }> {
   // Clean up stale rooms older than 2 hours
   const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
   for (const [c, r] of rooms.entries()) {
@@ -120,10 +162,12 @@ export function createMultiplayerRoom(
     },
   };
 
-  rooms.set(code, {
+  const internalRecord: InternalRoomRecord = {
     state: roomState,
     secretTitles,
-  });
+  };
+
+  await persistRoomRecord(internalRecord);
 
   return {
     code,
@@ -132,12 +176,12 @@ export function createMultiplayerRoom(
   };
 }
 
-export function joinMultiplayerRoom(
+export async function joinMultiplayerRoom(
   code: string,
   playerName: string
-): { playerId: string; room: RoomState } | { error: string } {
+): Promise<{ playerId: string; room: RoomState } | { error: string }> {
   const normCode = code.trim().toUpperCase();
-  const record = rooms.get(normCode);
+  const record = await getInternalRoomRecord(normCode);
   if (!record) {
     return { error: 'Room not found. Check the code and try again.' };
   }
@@ -170,18 +214,20 @@ export function joinMultiplayerRoom(
     timestamp: Date.now(),
   };
 
+  await persistRoomRecord(record);
+
   return {
     playerId,
     room: state,
   };
 }
 
-export function startMultiplayerMatch(
+export async function startMultiplayerMatch(
   code: string,
   playerId: string
-): { room: RoomState } | { error: string } {
+): Promise<{ room: RoomState } | { error: string }> {
   const normCode = code.trim().toUpperCase();
-  const record = rooms.get(normCode);
+  const record = await getInternalRoomRecord(normCode);
   if (!record) {
     return { error: 'Room not found.' };
   }
@@ -215,22 +261,24 @@ export function startMultiplayerMatch(
     timestamp: now,
   };
 
+  await persistRoomRecord(record);
+
   return { room: state };
 }
 
-export function submitMultiplayerGuess(
+export async function submitMultiplayerGuess(
   code: string,
   playerId: string,
   guess: string,
   movieIndex: number
-): {
+): Promise<{
   isCorrect: boolean;
   awarded: boolean;
   room?: RoomState;
   message?: string;
-} {
+}> {
   const normCode = code.trim().toUpperCase();
-  const record = rooms.get(normCode);
+  const record = await getInternalRoomRecord(normCode);
   if (!record) {
     return { isCorrect: false, awarded: false, message: 'Room not found.' };
   }
@@ -239,6 +287,7 @@ export function submitMultiplayerGuess(
 
   // Check if time expired
   if (checkAndFinalizeRoom(state)) {
+    await persistRoomRecord(record);
     return { isCorrect: false, awarded: false, room: state, message: 'Time is up!' };
   }
 
@@ -302,6 +351,8 @@ export function submitMultiplayerGuess(
     finalizeRoomState(state);
   }
 
+  await persistRoomRecord(record);
+
   return {
     isCorrect: true,
     awarded: true,
@@ -310,12 +361,12 @@ export function submitMultiplayerGuess(
   };
 }
 
-export function leaveMultiplayerRoom(
+export async function leaveMultiplayerRoom(
   code: string,
   playerId: string
-): { room?: RoomState } {
+): Promise<{ room?: RoomState }> {
   const normCode = code.trim().toUpperCase();
-  const record = rooms.get(normCode);
+  const record = await getInternalRoomRecord(normCode);
   if (!record) return {};
 
   const { state } = record;
@@ -349,17 +400,23 @@ export function leaveMultiplayerRoom(
     }
   }
 
+  await persistRoomRecord(record);
+
   return { room: state };
 }
 
-export function getMultiplayerRoom(code: string): { room?: RoomState; error?: string } {
+export async function getMultiplayerRoom(code: string): Promise<{ room?: RoomState; error?: string }> {
   const normCode = code.trim().toUpperCase();
-  const record = rooms.get(normCode);
+  const record = await getInternalRoomRecord(normCode);
   if (!record) {
     return { error: 'Room not found.' };
   }
 
-  checkAndFinalizeRoom(record.state);
+  const finalized = checkAndFinalizeRoom(record.state);
+  if (finalized) {
+    await persistRoomRecord(record);
+  }
+
   return { room: record.state };
 }
 

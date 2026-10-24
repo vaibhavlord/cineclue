@@ -247,9 +247,9 @@ import {
   _getInternalRoom,
 } from './multiplayerManager.ts';
 
-test('createMultiplayerRoom generates 6-char code, sanitizes movies for client, and enforces filters', () => {
+test('createMultiplayerRoom generates 6-char code, sanitizes movies for client, and enforces filters', async () => {
   _resetMultiplayerRooms();
-  const created = createMultiplayerRoom('Alice', { countries: ['JP'], decades: [] });
+  const created = await createMultiplayerRoom('Alice', { countries: ['JP'], decades: [] });
 
   assert.equal(created.code.length, 6);
   assert.equal(created.room.hostId, created.playerId);
@@ -271,12 +271,12 @@ test('createMultiplayerRoom generates 6-char code, sanitizes movies for client, 
   assert.equal(new Set(internal.secretTitles).size, internal.secretTitles.length, 'No duplicate movies in match pool');
 });
 
-test('joinMultiplayerRoom allows second player and blocks third player', () => {
+test('joinMultiplayerRoom allows second player and blocks third player', async () => {
   _resetMultiplayerRooms();
-  const { code } = createMultiplayerRoom('HostPlayer');
+  const { code } = await createMultiplayerRoom('HostPlayer');
 
   // Join player 2
-  const joinRes = joinMultiplayerRoom(code, 'ChallengerPlayer');
+  const joinRes = await joinMultiplayerRoom(code, 'ChallengerPlayer');
   assert.equal('error' in joinRes, false);
   if ('room' in joinRes) {
     assert.equal(Object.keys(joinRes.room.players).length, 2);
@@ -285,23 +285,23 @@ test('joinMultiplayerRoom allows second player and blocks third player', () => {
   }
 
   // Attempt to join player 3
-  const thirdRes = joinMultiplayerRoom(code, 'Intruder');
+  const thirdRes = await joinMultiplayerRoom(code, 'Intruder');
   assert.equal('error' in thirdRes, true);
 });
 
-test('startMultiplayerMatch enforces host authorization and 60-second synchronized timer', () => {
+test('startMultiplayerMatch enforces host authorization and 60-second synchronized timer', async () => {
   _resetMultiplayerRooms();
-  const { code, playerId: hostId } = createMultiplayerRoom('HostPlayer');
-  const challenger = joinMultiplayerRoom(code, 'Challenger');
+  const { code, playerId: hostId } = await createMultiplayerRoom('HostPlayer');
+  const challenger = await joinMultiplayerRoom(code, 'Challenger');
   assert.equal('playerId' in challenger, true);
   if (!('playerId' in challenger)) return;
 
   // Challenger cannot start
-  const failStart = startMultiplayerMatch(code, challenger.playerId);
+  const failStart = await startMultiplayerMatch(code, challenger.playerId);
   assert.equal('error' in failStart, true);
 
   // Host starts
-  const startRes = startMultiplayerMatch(code, hostId);
+  const startRes = await startMultiplayerMatch(code, hostId);
   assert.equal('room' in startRes, true);
   if ('room' in startRes) {
     assert.equal(startRes.room.status, 'playing');
@@ -312,49 +312,49 @@ test('startMultiplayerMatch enforces host authorization and 60-second synchroniz
   }
 });
 
-test('submitMultiplayerGuess awards point to first solver and rejects simultaneous double-scoring', () => {
+test('submitMultiplayerGuess awards point to first solver and rejects simultaneous double-scoring', async () => {
   _resetMultiplayerRooms();
-  const { code, playerId: hostId } = createMultiplayerRoom('Alice');
-  const joinRes = joinMultiplayerRoom(code, 'Bob');
+  const { code, playerId: hostId } = await createMultiplayerRoom('Alice');
+  const joinRes = await joinMultiplayerRoom(code, 'Bob');
   if (!('playerId' in joinRes)) return;
   const bobId = joinRes.playerId;
 
-  startMultiplayerMatch(code, hostId);
+  await startMultiplayerMatch(code, hostId);
   const internal = _getInternalRoom(code)!;
   const firstMovieTitle = internal.secretTitles[0];
 
   // Alice submits correct answer for movie 0
-  const aliceGuess = submitMultiplayerGuess(code, hostId, firstMovieTitle, 0);
+  const aliceGuess = await submitMultiplayerGuess(code, hostId, firstMovieTitle, 0);
   assert.equal(aliceGuess.isCorrect, true);
   assert.equal(aliceGuess.awarded, true);
   assert.equal(aliceGuess.room?.players[hostId].score, 1);
   assert.equal(aliceGuess.room?.currentMovieIndex, 1);
 
   // Bob submits same correct answer for movie 0 immediately after (race condition test)
-  const bobLateGuess = submitMultiplayerGuess(code, bobId, firstMovieTitle, 0);
+  const bobLateGuess = await submitMultiplayerGuess(code, bobId, firstMovieTitle, 0);
   assert.equal(bobLateGuess.awarded, false);
   assert.equal(bobLateGuess.room?.players[bobId].score, 0, 'Late submit must not double-award point');
 
   // Verify Bob solves movie 1 correctly
   const secondMovieTitle = internal.secretTitles[1];
-  const bobGuess = submitMultiplayerGuess(code, bobId, secondMovieTitle, 1);
+  const bobGuess = await submitMultiplayerGuess(code, bobId, secondMovieTitle, 1);
   assert.equal(bobGuess.isCorrect, true);
   assert.equal(bobGuess.awarded, true);
   assert.equal(bobGuess.room?.players[bobId].score, 1);
   assert.equal(bobGuess.room?.currentMovieIndex, 2);
 });
 
-test('leaveMultiplayerRoom handles match abandonment and awards forfeit victory', () => {
+test('leaveMultiplayerRoom handles match abandonment and awards forfeit victory', async () => {
   _resetMultiplayerRooms();
-  const { code, playerId: p1 } = createMultiplayerRoom('P1');
-  const p2Res = joinMultiplayerRoom(code, 'P2');
+  const { code, playerId: p1 } = await createMultiplayerRoom('P1');
+  const p2Res = await joinMultiplayerRoom(code, 'P2');
   if (!('playerId' in p2Res)) return;
   const p2 = p2Res.playerId;
 
-  startMultiplayerMatch(code, p1);
+  await startMultiplayerMatch(code, p1);
 
   // P1 disconnects / leaves during match
-  const res = leaveMultiplayerRoom(code, p1);
+  const res = await leaveMultiplayerRoom(code, p1);
   assert.equal(res.room?.status, 'abandoned');
   assert.equal(res.room?.winnerId, p2, 'Remaining player must be awarded win upon opponent forfeit');
 });

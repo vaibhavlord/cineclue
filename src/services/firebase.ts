@@ -1,14 +1,35 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, doc, onSnapshot, setDoc, Firestore } from 'firebase/firestore';
+import {
+  getFirestore,
+  doc,
+  onSnapshot,
+  setDoc,
+  getDoc,
+  Firestore,
+} from 'firebase/firestore';
 import { RoomState } from '../types/multiplayer';
 
+function getEnv(key: string): string {
+  if (typeof process !== 'undefined' && process.env && process.env[key]) {
+    return process.env[key] || '';
+  }
+  try {
+    if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
+      return (import.meta as any).env[key] || '';
+    }
+  } catch {
+    // Ignore
+  }
+  return '';
+}
+
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
+  apiKey: getEnv('VITE_FIREBASE_API_KEY') || getEnv('FIREBASE_API_KEY'),
+  authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN') || getEnv('FIREBASE_AUTH_DOMAIN'),
+  projectId: getEnv('VITE_FIREBASE_PROJECT_ID') || getEnv('FIREBASE_PROJECT_ID'),
+  storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET') || getEnv('FIREBASE_STORAGE_BUCKET'),
+  messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID') || getEnv('FIREBASE_MESSAGING_SENDER_ID'),
+  appId: getEnv('VITE_FIREBASE_APP_ID') || getEnv('FIREBASE_APP_ID'),
 };
 
 export function isFirebaseConfigured(): boolean {
@@ -107,5 +128,68 @@ export async function syncRoomStateToFirestore(room: RoomState): Promise<void> {
     await setDoc(roomDocRef, room, { merge: true });
   } catch (err) {
     console.warn('Could not sync to Firestore:', err);
+  }
+}
+
+/**
+ * Fetches a room state from Firestore (used by serverless functions and client).
+ */
+export async function fetchRoomFromFirestore(code: string): Promise<RoomState | null> {
+  const db = getFirestoreDb();
+  if (!db || !code) return null;
+
+  try {
+    const roomDocRef = doc(db, 'multiplayer_rooms', code.trim().toUpperCase());
+    const snap = await getDoc(roomDocRef);
+    if (snap.exists()) {
+      return snap.data() as RoomState;
+    }
+  } catch (err) {
+    console.warn('Could not fetch room from Firestore:', err);
+  }
+  return null;
+}
+
+/**
+ * Fetches secret titles for server-side verification from private collection.
+ */
+export async function fetchRoomSecretsFromFirestore(code: string): Promise<string[] | null> {
+  const db = getFirestoreDb();
+  if (!db || !code) return null;
+
+  try {
+    const secretDocRef = doc(db, 'multiplayer_secrets', code.trim().toUpperCase());
+    const snap = await getDoc(secretDocRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      return Array.isArray(data.secretTitles) ? data.secretTitles : null;
+    }
+  } catch (err) {
+    console.warn('Could not fetch secrets from Firestore:', err);
+  }
+  return null;
+}
+
+/**
+ * Persists room state and secret titles to Firestore.
+ */
+export async function saveRoomToFirestore(
+  state: RoomState,
+  secretTitles?: string[]
+): Promise<void> {
+  const db = getFirestoreDb();
+  if (!db || !state || !state.code) return;
+  const normCode = state.code.trim().toUpperCase();
+
+  try {
+    const roomDocRef = doc(db, 'multiplayer_rooms', normCode);
+    await setDoc(roomDocRef, state, { merge: true });
+
+    if (secretTitles && secretTitles.length > 0) {
+      const secretDocRef = doc(db, 'multiplayer_secrets', normCode);
+      await setDoc(secretDocRef, { secretTitles, updatedAt: Date.now() }, { merge: true });
+    }
+  } catch (err) {
+    console.warn('Could not save room to Firestore:', err);
   }
 }
