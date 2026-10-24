@@ -1,65 +1,104 @@
 import { RoomState } from '../types/multiplayer';
 import { MovieFilters } from '../types/movie';
 import { syncRoomStateToFirestore } from './firebase';
+import {
+  createMultiplayerRoom,
+  joinMultiplayerRoom,
+  startMultiplayerMatch,
+  submitMultiplayerGuess,
+  leaveMultiplayerRoom,
+  getMultiplayerRoom,
+} from '../game/multiplayerManager';
 
 export async function createRoom(
   hostName: string,
   filters: MovieFilters
 ): Promise<{ code: string; playerId: string; room: RoomState }> {
-  const res = await fetch('/api/multiplayer/room/create', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ hostName, filters }),
-  });
+  try {
+    const res = await fetch('/api/multiplayer/room/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostName, filters }),
+    });
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error) {
-    throw new Error(data.error || 'Failed to create room.');
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.code && data?.room) {
+        await syncRoomStateToFirestore(data.room);
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn('API createRoom failed, activating direct Firestore sync:', err);
   }
 
-  if (data.room) {
-    await syncRoomStateToFirestore(data.room);
-  }
-  return data;
+  // Direct Firestore Fallback (bulletproof across all serverless & edge hosts)
+  const result = await createMultiplayerRoom(hostName, filters);
+  await syncRoomStateToFirestore(result.room);
+  return result;
 }
 
 export async function joinRoom(
   code: string,
   playerName: string
 ): Promise<{ playerId: string; room: RoomState }> {
-  const res = await fetch('/api/multiplayer/room/join', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, playerName }),
-  });
+  const normCode = code.trim().toUpperCase();
 
-  const data = await res.json();
-  if (!res.ok || data.error) {
-    throw new Error(data.error || 'Failed to join room.');
+  try {
+    const res = await fetch('/api/multiplayer/room/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: normCode, playerName }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.playerId && data?.room) {
+        await syncRoomStateToFirestore(data.room);
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn('API joinRoom failed, activating direct Firestore sync:', err);
   }
 
-  if (data.room) {
-    await syncRoomStateToFirestore(data.room);
+  const result = await joinMultiplayerRoom(normCode, playerName);
+  if ('error' in result) {
+    throw new Error(result.error);
   }
-  return data;
+
+  await syncRoomStateToFirestore(result.room);
+  return result;
 }
 
 export async function startMatch(code: string, playerId: string): Promise<RoomState> {
-  const res = await fetch('/api/multiplayer/room/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, playerId }),
-  });
+  const normCode = code.trim().toUpperCase();
 
-  const data = await res.json();
-  if (!res.ok || data.error) {
-    throw new Error(data.error || 'Failed to start match.');
+  try {
+    const res = await fetch('/api/multiplayer/room/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: normCode, playerId }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.room) {
+        await syncRoomStateToFirestore(data.room);
+        return data.room;
+      }
+    }
+  } catch (err) {
+    console.warn('API startMatch failed, activating direct Firestore sync:', err);
   }
 
-  if (data.room) {
-    await syncRoomStateToFirestore(data.room);
+  const result = await startMultiplayerMatch(normCode, playerId);
+  if ('error' in result) {
+    throw new Error(result.error);
   }
-  return data.room;
+
+  await syncRoomStateToFirestore(result.room);
+  return result.room;
 }
 
 export async function submitGuess(
@@ -68,44 +107,81 @@ export async function submitGuess(
   guess: string,
   movieIndex: number
 ): Promise<{ isCorrect: boolean; awarded: boolean; message?: string; room?: RoomState }> {
-  const res = await fetch('/api/multiplayer/room/guess', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, playerId, guess, movieIndex }),
-  });
+  const normCode = code.trim().toUpperCase();
 
-  const data = await res.json();
-  if (data.room) {
-    await syncRoomStateToFirestore(data.room);
+  try {
+    const res = await fetch('/api/multiplayer/room/guess', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: normCode, playerId, guess, movieIndex }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.room) {
+        await syncRoomStateToFirestore(data.room);
+      }
+      return data;
+    }
+  } catch (err) {
+    console.warn('API submitGuess failed, activating direct Firestore sync:', err);
   }
-  return data;
+
+  const result = await submitMultiplayerGuess(normCode, playerId, guess, movieIndex);
+  if (result.room) {
+    await syncRoomStateToFirestore(result.room);
+  }
+  return result;
 }
 
 export async function leaveRoom(code: string, playerId: string): Promise<void> {
+  const normCode = code.trim().toUpperCase();
+
   try {
     const res = await fetch('/api/multiplayer/room/leave', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, playerId }),
+      body: JSON.stringify({ code: normCode, playerId }),
     });
-    const data = await res.json();
-    if (data.room) {
-      await syncRoomStateToFirestore(data.room);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.room) {
+        await syncRoomStateToFirestore(data.room);
+        return;
+      }
     }
   } catch {
-    // Ignore leave errors
+    // Fall back to direct
+  }
+
+  try {
+    const result = await leaveMultiplayerRoom(normCode, playerId);
+    if ('room' in result && result.room) {
+      await syncRoomStateToFirestore(result.room);
+    }
+  } catch {
+    // Ignore leave error
   }
 }
 
 export async function fetchRoom(code: string): Promise<RoomState | null> {
+  const normCode = code.trim().toUpperCase();
+
   try {
-    const res = await fetch(`/api/multiplayer/room/${code}`);
+    const res = await fetch(`/api/multiplayer/room/${normCode}`);
     if (res.ok) {
       const data = await res.json();
-      return data.room || null;
+      if (data?.room) return data.room;
     }
   } catch {
-    // Ignore fetch error
+    // Fall back to direct
   }
-  return null;
+
+  try {
+    const result = await getMultiplayerRoom(normCode);
+    if ('error' in result) return null;
+    return result.room || null;
+  } catch {
+    return null;
+  }
 }
