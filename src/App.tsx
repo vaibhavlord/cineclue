@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import confetti from 'canvas-confetti';
+import { Analytics } from '@vercel/analytics/react';
 import { MOVIE_DATABASE, POPULAR_TITLES_CATALOG } from './data/movies';
 import { GameMode, GuessRecord, GameStats, Movie, MovieFilters } from './types/movie';
 import {
@@ -599,6 +600,9 @@ export default function App() {
           onClose={() => setShowFilterModal(false)}
         />
       )}
+
+      {/* Vercel Web Analytics */}
+      <Analytics />
     </div>
   );
 }
