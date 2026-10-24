@@ -43,6 +43,10 @@ import { StatsModal } from './components/StatsModal';
 import { HowToPlayModal } from './components/HowToPlayModal';
 import { TmdbInfoModal } from './components/TmdbInfoModal';
 import { FilterModal } from './components/FilterModal';
+import { MultiplayerLobby } from './components/MultiplayerLobby';
+import { MultiplayerArena } from './components/MultiplayerArena';
+import { MultiplayerGameOverModal } from './components/MultiplayerGameOverModal';
+import { RoomState } from './types/multiplayer';
 
 const STATS_STORAGE_KEY = 'cineclue_stats_v1';
 const MAX_GUESSES_PER_ROUND = 5;
@@ -65,8 +69,14 @@ const INITIAL_STATS: GameStats = {
 };
 
 export default function App() {
-  const [gameState, setGameState] = useState<'title' | 'playing' | 'paused' | 'gameover'>('title');
+  const [gameState, setGameState] = useState<
+    'title' | 'playing' | 'paused' | 'gameover' | 'multiplayer-lobby' | 'multiplayer-arena'
+  >('title');
   const [gameMode, setGameMode] = useState<GameMode>('campaign');
+  const [multiplayerRoom, setMultiplayerRoom] = useState<RoomState | null>(null);
+  const [multiplayerPlayerId, setMultiplayerPlayerId] = useState<string>('');
+  const [multiplayerGameOverRoom, setMultiplayerGameOverRoom] = useState<RoomState | null>(null);
+  const [initialRoomCode, setInitialRoomCode] = useState<string>('');
   const [currentMovieIndex, setCurrentMovieIndex] = useState<number>(0);
   const [revealedTiers, setRevealedTiers] = useState<number>(1);
   const [guesses, setGuesses] = useState<GuessRecord[]>([]);
@@ -176,11 +186,15 @@ export default function App() {
     }
   };
 
-  // Check URL autostart (?autostart=1)
+  // Check URL params (?autostart=1 or ?room=CODE)
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
-      if (params.get('autostart') === '1') {
+      const roomParam = params.get('room');
+      if (roomParam) {
+        setInitialRoomCode(roomParam.trim().toUpperCase());
+        setGameState('multiplayer-lobby');
+      } else if (params.get('autostart') === '1') {
         setGameState('playing');
         fetchRandomTmdbMovie(Array.from(sessionPlayedIds.current), filters).then((m) => {
           if (m) {
@@ -475,6 +489,7 @@ export default function App() {
       {gameState === 'title' && (
         <TitleScreen
           onStartGame={handleStartGame}
+          onOpenMultiplayer={() => setGameState('multiplayer-lobby')}
           onOpenStats={() => setShowStatsModal(true)}
           onOpenHowToPlay={() => setShowHowToPlayModal(true)}
           onOpenTmdb={() => setShowTmdbModal(true)}
@@ -483,6 +498,42 @@ export default function App() {
           soundEnabled={soundOn}
           onToggleSound={handleToggleSound}
           isModalOpen={showFilterModal || showStatsModal || showHowToPlayModal || showTmdbModal}
+        />
+      )}
+
+      {/* Screen 1.5: 1v1 Multiplayer Lobby */}
+      {gameState === 'multiplayer-lobby' && (
+        <MultiplayerLobby
+          currentFilters={filters}
+          onOpenFilters={() => setShowFilterModal(true)}
+          onBackToTitle={() => {
+            setGameState('title');
+            setMultiplayerRoom(null);
+          }}
+          onMatchStarted={(room, myPlayerId) => {
+            setMultiplayerRoom(room);
+            setMultiplayerPlayerId(myPlayerId);
+            setGameState('multiplayer-arena');
+          }}
+          initialRoomCode={initialRoomCode}
+        />
+      )}
+
+      {/* Screen 1.8: 1v1 Multiplayer In-Match Arena */}
+      {gameState === 'multiplayer-arena' && multiplayerRoom && (
+        <MultiplayerArena
+          initialRoom={multiplayerRoom}
+          myPlayerId={multiplayerPlayerId}
+          onMatchFinished={(finalRoom) => {
+            setMultiplayerGameOverRoom(finalRoom);
+          }}
+          onLeaveMatch={() => {
+            setMultiplayerRoom(null);
+            setMultiplayerPlayerId('');
+            setGameState('title');
+          }}
+          soundEnabled={soundOn}
+          onToggleSound={handleToggleSound}
         />
       )}
 
@@ -603,6 +654,24 @@ export default function App() {
 
       {/* Vercel Web Analytics */}
       <Analytics />
+
+      {/* 1v1 Multiplayer Post-Match Outcome Modal */}
+      {multiplayerGameOverRoom && (
+        <MultiplayerGameOverModal
+          room={multiplayerGameOverRoom}
+          myPlayerId={multiplayerPlayerId}
+          onPlayAgain={() => {
+            setMultiplayerGameOverRoom(null);
+            setGameState('multiplayer-lobby');
+          }}
+          onReturnToMenu={() => {
+            setMultiplayerGameOverRoom(null);
+            setMultiplayerRoom(null);
+            setMultiplayerPlayerId('');
+            setGameState('title');
+          }}
+        />
+      )}
     </div>
   );
 }

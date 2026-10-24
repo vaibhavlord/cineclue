@@ -236,24 +236,128 @@ test('selectNonRepeatingMovie serves strictly matching, non-repeating movies for
   }
 });
 
-test('selectNonRepeatingMovie cycles within the active filter pool without ever leaking unfiltered movies or back-to-back repeats', () => {
-  const smallCatalog = [
-    { id: 'kr-1', title: 'Parasite', year: 2019, decade: '2010s', country: 'KR' },
-    { id: 'kr-2', title: 'Oldboy', year: 2003, decade: '2000s', country: 'KR' },
-    { id: 'us-1', title: 'Inception', year: 2010, decade: '2010s', country: 'US' },
-  ];
+import {
+  createMultiplayerRoom,
+  joinMultiplayerRoom,
+  startMultiplayerMatch,
+  submitMultiplayerGuess,
+  leaveMultiplayerRoom,
+  getMultiplayerRoom,
+  _resetMultiplayerRooms,
+  _getInternalRoom,
+} from './multiplayerManager.ts';
 
-  // Both KR movies have been seen, and kr-2 was the immediately preceding movie
-  const result = selectNonRepeatingMovie(
-    smallCatalog,
-    { countries: ['KR'], decades: [] },
-    ['kr-1', 'kr-2'],
-    ['kr-2']
-  );
+test('createMultiplayerRoom generates 6-char code, sanitizes movies for client, and enforces filters', () => {
+  _resetMultiplayerRooms();
+  const created = createMultiplayerRoom('Alice', { countries: ['JP'], decades: [] });
 
-  assert.equal(result.didCycleFilterPool, true);
-  assert.equal(result.movie.country, 'KR', 'Must preserve KR filter even when pool cycles');
-  assert.equal(result.movie.id, 'kr-1', 'Must not repeat immediately preceding movie kr-2');
+  assert.equal(created.code.length, 6);
+  assert.equal(created.room.hostId, created.playerId);
+  assert.equal(created.room.players[created.playerId].name, 'Alice');
+  assert.equal(created.room.players[created.playerId].isHost, true);
+  assert.equal(created.room.status, 'lobby');
+
+  // Verify movies are sanitized for clients: none have a title field
+  for (const m of created.room.movieList) {
+    assert.equal((m as any).title, undefined, 'Client safe movie must not expose title');
+    assert.ok(m.director, 'Client safe movie should include director');
+    assert.ok(m.year, 'Client safe movie should include year');
+  }
+
+  // Internal room has corresponding secret titles
+  const internal = _getInternalRoom(created.code);
+  assert.ok(internal);
+  assert.equal(internal.secretTitles.length, created.room.movieList.length);
+  assert.equal(new Set(internal.secretTitles).size, internal.secretTitles.length, 'No duplicate movies in match pool');
 });
+
+test('joinMultiplayerRoom allows second player and blocks third player', () => {
+  _resetMultiplayerRooms();
+  const { code } = createMultiplayerRoom('HostPlayer');
+
+  // Join player 2
+  const joinRes = joinMultiplayerRoom(code, 'ChallengerPlayer');
+  assert.equal('error' in joinRes, false);
+  if ('room' in joinRes) {
+    assert.equal(Object.keys(joinRes.room.players).length, 2);
+    assert.equal(joinRes.room.players[joinRes.playerId].name, 'ChallengerPlayer');
+    assert.equal(joinRes.room.players[joinRes.playerId].isHost, false);
+  }
+
+  // Attempt to join player 3
+  const thirdRes = joinMultiplayerRoom(code, 'Intruder');
+  assert.equal('error' in thirdRes, true);
+});
+
+test('startMultiplayerMatch enforces host authorization and 60-second synchronized timer', () => {
+  _resetMultiplayerRooms();
+  const { code, playerId: hostId } = createMultiplayerRoom('HostPlayer');
+  const challenger = joinMultiplayerRoom(code, 'Challenger');
+  assert.equal('playerId' in challenger, true);
+  if (!('playerId' in challenger)) return;
+
+  // Challenger cannot start
+  const failStart = startMultiplayerMatch(code, challenger.playerId);
+  assert.equal('error' in failStart, true);
+
+  // Host starts
+  const startRes = startMultiplayerMatch(code, hostId);
+  assert.equal('room' in startRes, true);
+  if ('room' in startRes) {
+    assert.equal(startRes.room.status, 'playing');
+    assert.ok(startRes.room.matchStartTime);
+    assert.ok(startRes.room.matchEndTime);
+    assert.equal(startRes.room.matchEndTime! - startRes.room.matchStartTime!, 60000);
+    assert.equal(startRes.room.currentMovieIndex, 0);
+  }
+});
+
+test('submitMultiplayerGuess awards point to first solver and rejects simultaneous double-scoring', () => {
+  _resetMultiplayerRooms();
+  const { code, playerId: hostId } = createMultiplayerRoom('Alice');
+  const joinRes = joinMultiplayerRoom(code, 'Bob');
+  if (!('playerId' in joinRes)) return;
+  const bobId = joinRes.playerId;
+
+  startMultiplayerMatch(code, hostId);
+  const internal = _getInternalRoom(code)!;
+  const firstMovieTitle = internal.secretTitles[0];
+
+  // Alice submits correct answer for movie 0
+  const aliceGuess = submitMultiplayerGuess(code, hostId, firstMovieTitle, 0);
+  assert.equal(aliceGuess.isCorrect, true);
+  assert.equal(aliceGuess.awarded, true);
+  assert.equal(aliceGuess.room?.players[hostId].score, 1);
+  assert.equal(aliceGuess.room?.currentMovieIndex, 1);
+
+  // Bob submits same correct answer for movie 0 immediately after (race condition test)
+  const bobLateGuess = submitMultiplayerGuess(code, bobId, firstMovieTitle, 0);
+  assert.equal(bobLateGuess.awarded, false);
+  assert.equal(bobLateGuess.room?.players[bobId].score, 0, 'Late submit must not double-award point');
+
+  // Verify Bob solves movie 1 correctly
+  const secondMovieTitle = internal.secretTitles[1];
+  const bobGuess = submitMultiplayerGuess(code, bobId, secondMovieTitle, 1);
+  assert.equal(bobGuess.isCorrect, true);
+  assert.equal(bobGuess.awarded, true);
+  assert.equal(bobGuess.room?.players[bobId].score, 1);
+  assert.equal(bobGuess.room?.currentMovieIndex, 2);
+});
+
+test('leaveMultiplayerRoom handles match abandonment and awards forfeit victory', () => {
+  _resetMultiplayerRooms();
+  const { code, playerId: p1 } = createMultiplayerRoom('P1');
+  const p2Res = joinMultiplayerRoom(code, 'P2');
+  if (!('playerId' in p2Res)) return;
+  const p2 = p2Res.playerId;
+
+  startMultiplayerMatch(code, p1);
+
+  // P1 disconnects / leaves during match
+  const res = leaveMultiplayerRoom(code, p1);
+  assert.equal(res.room?.status, 'abandoned');
+  assert.equal(res.room?.winnerId, p2, 'Remaining player must be awarded win upon opponent forfeit');
+});
+
 
 

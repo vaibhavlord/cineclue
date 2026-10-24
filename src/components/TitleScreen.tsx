@@ -8,12 +8,16 @@ import {
   VolumeX,
   Check,
   Zap,
+  Flame,
+  Users,
+  Trophy,
 } from 'lucide-react';
 import { playProjectorClick } from '../utils/audio';
 import { isFilterActive } from '../data/filterOptions';
 
 interface TitleScreenProps {
   onStartGame: (mode: GameMode) => void;
+  onOpenMultiplayer: () => void;
   onOpenStats: () => void;
   onOpenHowToPlay: () => void;
   onOpenTmdb: () => void;
@@ -26,6 +30,7 @@ interface TitleScreenProps {
 
 export const TitleScreen: React.FC<TitleScreenProps> = ({
   onStartGame,
+  onOpenMultiplayer,
   onOpenStats,
   onOpenHowToPlay,
   onOpenFilters,
@@ -34,20 +39,25 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   onToggleSound,
   isModalOpen = false,
 }) => {
-  const [selectedMode, setSelectedMode] = useState<GameMode>('campaign');
+  const [selectedMode, setSelectedMode] = useState<GameMode | 'multiplayer'>('campaign');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Enter' && !isModalOpen) {
-        onStartGame(selectedMode);
+        if (selectedMode === 'multiplayer') {
+          onOpenMultiplayer();
+        } else {
+          onStartGame(selectedMode);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onStartGame, selectedMode, isModalOpen]);
+  }, [onStartGame, onOpenMultiplayer, selectedMode, isModalOpen]);
 
   const isDirectorCut = selectedMode === 'campaign';
   const isFastFurious = selectedMode === 'speedrun';
+  const isMultiplayer = selectedMode === 'multiplayer';
   const hasActiveFilters = isFilterActive(currentFilters);
 
   return (
@@ -102,7 +112,17 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           </div>
 
           {/* Right Navigation Controls */}
-          <nav className="flex items-center gap-5 sm:gap-7 text-[15px] font-medium text-[#FDF5E1]">
+          <nav className="flex items-center gap-4 sm:gap-6 text-[15px] font-medium text-[#FDF5E1]">
+            <button
+              type="button"
+              onClick={onOpenMultiplayer}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#EC5A49]/15 border border-[#EC5A49]/35 text-[#EC5A49] hover:bg-[#EC5A49]/25 transition-colors cursor-pointer text-xs sm:text-[14px] font-semibold whitespace-nowrap"
+              aria-label="1v1 Online Multiplayer"
+            >
+              <Flame className="w-3.5 h-3.5" />
+              <span>1v1 Duel</span>
+            </button>
+
             <button
               type="button"
               onClick={onOpenFilters}
@@ -198,12 +218,12 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               CHOOSE YOUR FEATURE
             </span>
             <span className="text-xs sm:text-[14px] text-[#9A948A]">
-              Two ways to earn your film-club cred.
+              Solo speedruns or live head-to-head battles.
             </span>
           </div>
 
-          {/* Two Mode Cards Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {/* Mode Cards Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {/* Card 1: Director's Cut */}
             <button
               type="button"
@@ -429,6 +449,69 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                 </div>
               </div>
             </button>
+
+            {/* Card 3: 1v1 Online Duel */}
+            <button
+              type="button"
+              onClick={() => {
+                playProjectorClick();
+                setSelectedMode('multiplayer');
+              }}
+              aria-label="1v1 Online Multiplayer Mode"
+              className={`group relative rounded-[20px] p-6 sm:p-7 text-left transition-all cursor-pointer overflow-hidden flex flex-col justify-between min-h-[245px] ${
+                isMultiplayer
+                  ? 'bg-gradient-to-br from-[#382618] via-[#2D1F14] to-[#22170F] border-2 border-[#EAF18A] shadow-[0_5px_0_0_#757A33]'
+                  : 'bg-[#20201F] hover:bg-[#262625] border border-white/[0.1] shadow-[0_4px_0_0_#0D0D0C]'
+              }`}
+            >
+              {/* Top Row: Kicker & Radio Indicator */}
+              <div className="flex items-center justify-between w-full">
+                <div className="flex items-center gap-1.5">
+                  <Flame className="w-3.5 h-3.5 text-[#EAF18A] fill-[#EAF18A] shrink-0" />
+                  <span className="font-mono-code text-[11px] font-semibold tracking-[0.14em] text-[#EAF18A] uppercase">
+                    LIVE MULTIPLAYER
+                  </span>
+                </div>
+
+                {isMultiplayer ? (
+                  <span className="w-6 h-6 rounded-full bg-[#EAF18A] text-[#141413] flex items-center justify-center shrink-0">
+                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+                  </span>
+                ) : (
+                  <span className="w-6 h-6 rounded-full border border-white/25 shrink-0" />
+                )}
+              </div>
+
+              {/* Card Body Content */}
+              <div className="relative z-10 pr-28 sm:pr-32 my-2">
+                <h2 className="font-cinema text-[36px] sm:text-[42px] text-[#FDF5E1] leading-none tracking-[0.02em]">
+                  1v1 Online Duel
+                </h2>
+                <p className="font-mono-code text-[14px] text-[#EAF18A] mt-2 font-medium">
+                  60s Speed Duel &bull; Live Code
+                </p>
+                <p className="text-[14px] sm:text-[15px] text-[#B8B1A6] leading-relaxed mt-2.5 max-w-[330px]">
+                  Real-time head-to-head. Same movie, same clues. First buzzer to submit wins the point.
+                </p>
+              </div>
+
+              {/* Bottom Status Line */}
+              <div className="h-5 flex items-center">
+                {isMultiplayer && (
+                  <div className="flex items-center gap-1.5 font-mono-code text-[10px] font-semibold tracking-[0.16em] text-[#EAF18A] uppercase">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#EAF18A]" />
+                    <span>READY TO ROLL</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Right Medallion: Trophy Circle */}
+              <div className="pointer-events-none absolute right-6 bottom-6 flex flex-col items-end">
+                <div className="w-[116px] h-[116px] rounded-full bg-[#42391F] flex items-center justify-center">
+                  <Trophy className="w-14 h-14 text-[#EAF18A]" />
+                </div>
+              </div>
+            </button>
           </div>
 
           {/* Primary Play Action & Secondary Filters Button Row */}
@@ -436,7 +519,13 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             <button
               type="button"
               data-start="true"
-              onClick={() => onStartGame(selectedMode)}
+              onClick={() => {
+                if (isMultiplayer) {
+                  onOpenMultiplayer();
+                } else {
+                  onStartGame(selectedMode as GameMode);
+                }
+              }}
               aria-label="Start Game"
               className="sm:col-span-9 h-[66px] rounded-[16px] bg-[#EC5A49] hover:bg-[#F26655] active:translate-y-[2px] text-[#141413] shadow-[0_5px_0_0_#873329] flex items-center justify-center gap-3 transition-all cursor-pointer px-6"
             >
@@ -457,7 +546,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                 PLAY
               </span>
               <span className="text-[16px] font-semibold text-[#141413] tracking-[-0.01em]">
-                &mdash; {isDirectorCut ? "Director's Cut" : 'Fast & Furious'}
+                &mdash; {isDirectorCut ? "Director's Cut" : isFastFurious ? 'Fast & Furious' : '1v1 Online Duel'}
               </span>
             </button>
 

@@ -8,6 +8,14 @@ import {
   selectNonRepeatingMovie,
 } from './src/game/rules.ts';
 import { MOVIE_DATABASE, POPULAR_TITLES_CATALOG } from './src/data/movies.ts';
+import {
+  createMultiplayerRoom,
+  joinMultiplayerRoom,
+  startMultiplayerMatch,
+  submitMultiplayerGuess,
+  leaveMultiplayerRoom,
+  getMultiplayerRoom,
+} from './src/game/multiplayerManager.ts';
 
 dotenv.config();
 
@@ -533,6 +541,67 @@ app.get(['/api/tmdb/random-movie', '/tmdb/random-movie'], async (req: Request, r
     console.error('Error selecting fallback archive movie:', err);
     res.status(500).json({ error: 'Failed to generate movie challenge' });
   }
+});
+
+// --- 1v1 Online Multiplayer Authoritative Endpoints ---
+app.post(['/api/multiplayer/room/create', '/multiplayer/room/create'], (req: Request, res: Response) => {
+  const { hostName, filters } = req.body || {};
+  const result = createMultiplayerRoom(hostName || 'Player 1', filters);
+  res.json(result);
+});
+
+app.post(['/api/multiplayer/room/join', '/multiplayer/room/join'], (req: Request, res: Response) => {
+  const { code, playerName } = req.body || {};
+  if (!code) {
+    res.status(400).json({ error: 'Room code is required' });
+    return;
+  }
+  const result = joinMultiplayerRoom(code, playerName || 'Player 2');
+  if ('error' in result) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+app.post(['/api/multiplayer/room/start', '/multiplayer/room/start'], (req: Request, res: Response) => {
+  const { code, playerId } = req.body || {};
+  if (!code || !playerId) {
+    res.status(400).json({ error: 'Code and playerId are required' });
+    return;
+  }
+  const result = startMultiplayerMatch(code, playerId);
+  if ('error' in result) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+app.post(['/api/multiplayer/room/guess', '/multiplayer/room/guess'], (req: Request, res: Response) => {
+  const { code, playerId, guess, movieIndex } = req.body || {};
+  if (!code || !playerId || typeof guess !== 'string') {
+    res.status(400).json({ error: 'Invalid guess payload' });
+    return;
+  }
+  const result = submitMultiplayerGuess(code, playerId, guess, Number(movieIndex) || 0);
+  res.json(result);
+});
+
+app.post(['/api/multiplayer/room/leave', '/multiplayer/room/leave'], (req: Request, res: Response) => {
+  const { code, playerId } = req.body || {};
+  const result = leaveMultiplayerRoom(code || '', playerId || '');
+  res.json(result);
+});
+
+app.get(['/api/multiplayer/room/:code', '/multiplayer/room/:code'], (req: Request, res: Response) => {
+  const { code } = req.params;
+  const result = getMultiplayerRoom(code);
+  if ('error' in result) {
+    res.status(404).json(result);
+    return;
+  }
+  res.json(result);
 });
 
 async function startServer() {
