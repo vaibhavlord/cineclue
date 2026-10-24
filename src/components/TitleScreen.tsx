@@ -10,7 +10,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { playProjectorClick } from '../utils/audio';
-import { isFilterActive, formatFilterSummary } from '../data/filterOptions';
+import { isFilterActive } from '../data/filterOptions';
 
 interface TitleScreenProps {
   onStartGame: (mode: GameMode) => void;
@@ -37,9 +37,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   const [selectedMode, setSelectedMode] = useState<GameMode>('campaign');
 
   useEffect(() => {
-    if (isModalOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && !isModalOpen) {
         onStartGame(selectedMode);
       }
     };
@@ -50,7 +49,6 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   const isDirectorCut = selectedMode === 'campaign';
   const isFastFurious = selectedMode === 'speedrun';
   const hasActiveFilters = isFilterActive(currentFilters);
-  const filterLabel = hasActiveFilters ? formatFilterSummary(currentFilters) : '';
 
   return (
     <div className="min-h-screen w-full bg-[#141413] text-[#FDF5E1] flex flex-col justify-between select-none">
@@ -466,17 +464,14 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             <button
               type="button"
               onClick={onOpenFilters}
-              className={`sm:col-span-3 h-[66px] rounded-[16px] border flex items-center justify-center gap-2.5 text-[16px] font-semibold transition-all cursor-pointer px-3 ${
+              className={`sm:col-span-3 h-[66px] rounded-[16px] border flex items-center justify-center gap-2.5 text-[16px] font-semibold transition-all cursor-pointer ${
                 hasActiveFilters
                   ? 'bg-[#2B201E] border-[#EC5A49] text-[#FDF5E1] shadow-[0_4px_0_0_#823328]'
                   : 'bg-[#20201F] hover:bg-[#282827] border-white/[0.1] text-[#FDF5E1] shadow-[0_4px_0_0_#0D0D0C]'
               }`}
-              title={hasActiveFilters ? `Active Filters: ${filterLabel}` : 'Open Filters'}
             >
-              <SlidersHorizontal className="w-4 h-4 text-[#FDF5E1] shrink-0" />
-              <span className="truncate">
-                {hasActiveFilters ? `Filters • ${filterLabel}` : 'Filters'}
-              </span>
+              <SlidersHorizontal className="w-4 h-4 text-[#FDF5E1]" />
+              <span>Filters{hasActiveFilters ? ' •' : ''}</span>
             </button>
           </div>
 

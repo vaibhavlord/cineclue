@@ -14,8 +14,6 @@ import {
   findMatchingGenres,
   calculateStarRating,
   getAvailableLetterHints,
-  matchesMovieFilters,
-  normalizeTitle,
   selectNonRepeatingMovie,
 } from './game/rules';
 import {
@@ -33,12 +31,6 @@ import {
   clearMoviePrefetchCache,
   fetchRandomTmdbMovie,
   prefetchNextTmdbMovie,
-  resetSeenMovies,
-  startNewGameRound,
-  submitRoundGuess,
-  revealNextRoundClue,
-  skipGameRound,
-  PublicRoundData,
 } from './services/tmdbService';
 import { DEFAULT_FILTERS } from './data/filterOptions';
 import { TitleScreen } from './components/TitleScreen';
@@ -50,7 +42,6 @@ import { StatsModal } from './components/StatsModal';
 import { HowToPlayModal } from './components/HowToPlayModal';
 import { TmdbInfoModal } from './components/TmdbInfoModal';
 import { FilterModal } from './components/FilterModal';
-import { ExhaustedPoolModal } from './components/ExhaustedPoolModal';
 
 const STATS_STORAGE_KEY = 'cineclue_stats_v1';
 const MAX_GUESSES_PER_ROUND = 5;
@@ -89,7 +80,6 @@ export default function App() {
   const [showHowToPlayModal, setShowHowToPlayModal] = useState<boolean>(false);
   const [showTmdbModal, setShowTmdbModal] = useState<boolean>(false);
   const [showFilterModal, setShowFilterModal] = useState<boolean>(false);
-  const [showExhaustedModal, setShowExhaustedModal] = useState<boolean>(false);
   const [speedrunTimer, setSpeedrunTimer] = useState<number>(15);
 
   // Filter state persisted in localStorage
@@ -130,74 +120,43 @@ export default function App() {
   }, [gameState]);
 
   const filtersRef = useRef<MovieFilters>(filters);
-  useEffect(() => {
-    filtersRef.current = filters;
-  }, [filters]);
+  filtersRef.current = filters;
 
   const [currentMovie, setCurrentMovie] = useState<Movie>(() => {
-    const { movie } = selectNonRepeatingMovie(MOVIE_DATABASE, filters, []);
-    return movie || MOVIE_DATABASE[0];
+    return selectNonRepeatingMovie(MOVIE_DATABASE, filters, []).movie;
   });
-  const [activeRound, setActiveRound] = useState<PublicRoundData | null>(null);
-  const [revealedMovie, setRevealedMovie] = useState<Movie | null>(null);
-  const [isSubmittingGuess, setIsSubmittingGuess] = useState<boolean>(false);
-  const [guessFeedbackMessage, setGuessFeedbackMessage] = useState<string | null>(null);
   const [isLoadingMovie, setIsLoadingMovie] = useState<boolean>(false);
   const sessionPlayedIds = useRef<Set<string>>(new Set());
-  const sessionPlayedTitles = useRef<Set<string>>(new Set());
-
-  // Prefetch first live TMDB movie immediately on mount
-  useEffect(() => {
-    const excludeList = Array.from(sessionPlayedIds.current);
-    const excludeTitles = Array.from(sessionPlayedTitles.current);
-    prefetchNextTmdbMovie(excludeList, filtersRef.current, excludeTitles);
-  }, []);
-
-  const recordSessionMovie = useCallback((movieOrId: Movie | string, maybeTitle?: string) => {
-    const id = typeof movieOrId === 'string' ? movieOrId : movieOrId?.id;
-    const title = typeof movieOrId === 'string' ? maybeTitle : movieOrId?.title;
-    if (id && id.trim()) {
-      const trimmed = id.trim();
-      const clean = trimmed.replace(/^tmdb-/, '');
-      sessionPlayedIds.current.add(trimmed);
-      sessionPlayedIds.current.add(clean);
-      sessionPlayedIds.current.add(`tmdb-${clean}`);
-    }
-    if (title && title.trim()) {
-      const norm = normalizeTitle(title);
-      if (norm) sessionPlayedTitles.current.add(norm);
-    }
-  }, []);
 
   // Apply filters handler
   const handleApplyFilters = async (newFilters: MovieFilters) => {
     filtersRef.current = newFilters;
     setFilters(newFilters);
     clearMoviePrefetchCache();
-    setGuessFeedbackMessage(null);
     try {
       localStorage.setItem('cineclue_filters_v1', JSON.stringify(newFilters));
     } catch {
       // Ignore
     }
 
-    // If currently in active gameplay (playing, paused, or post-round modal), load a round matching the updated filters!
+    // Immediately pick a matching movie for the active filters
+    const quickPick = selectNonRepeatingMovie(
+      MOVIE_DATABASE,
+      newFilters,
+      Array.from(sessionPlayedIds.current)
+    ).movie;
+    setCurrentMovie(quickPick);
+
+    // If currently in active gameplay (playing, paused, or post-round modal), load a film matching the updated filters!
     if ((gameState === 'playing' || gameState === 'paused' || gameState === 'gameover') && gameMode !== 'daily') {
       setIsLoadingMovie(true);
-      setShowExhaustedModal(false);
       try {
-        const excludeList = Array.from(sessionPlayedIds.current);
-        const excludeTitles = Array.from(sessionPlayedTitles.current);
-        let roundData = await startNewGameRound(newFilters, excludeList, excludeTitles);
-        if (!roundData || !roundData.roundId) {
-          sessionPlayedIds.current.clear();
-          sessionPlayedTitles.current.clear();
-          roundData = await startNewGameRound(newFilters, [], []);
-        }
-        if (roundData && roundData.roundId) {
-          setActiveRound(roundData);
-          setRevealedMovie(null);
-          setRevealedTiers(roundData.revealedClues || 1);
+        const excludeList = Array.from(new Set([...sessionPlayedIds.current, quickPick.id]));
+        const movie = await fetchRandomTmdbMovie(excludeList, newFilters);
+        if (movie) {
+          sessionPlayedIds.current.add(movie.id);
+          setCurrentMovie(movie);
+          setRevealedTiers(1);
           setGuesses([]);
           setUnlockedLetters(new Set());
           setRoundStatus('playing');
@@ -207,36 +166,12 @@ export default function App() {
           }
           setGameState('playing');
         }
-      } catch (err) {
-        console.warn('Error applying filters, auto-recovering from TMDB with cleared exclusions:', err);
-        try {
-          sessionPlayedIds.current.clear();
-          sessionPlayedTitles.current.clear();
-          const roundData = await startNewGameRound(newFilters, [], []);
-          if (roundData && roundData.roundId) {
-            setActiveRound(roundData);
-            setRevealedMovie(null);
-            setRevealedTiers(roundData.revealedClues || 1);
-            setGuesses([]);
-            setUnlockedLetters(new Set());
-            setRoundStatus('playing');
-            setLastRoundPoints(0);
-            if (gameMode === 'speedrun') {
-              setSpeedrunTimer(15);
-            }
-            setGameState('playing');
-          }
-        } catch (innerErr) {
-          console.error('Auto recovery failed:', innerErr);
-        }
       } finally {
         setIsLoadingMovie(false);
       }
     } else {
-      // On title screen, prefetch next movie matching updated filters
-      const excludeList = Array.from(sessionPlayedIds.current);
-      const excludeTitles = Array.from(sessionPlayedTitles.current);
-      prefetchNextTmdbMovie(excludeList, newFilters, excludeTitles);
+      // On title screen, warm the prefetch cache for the newly selected filters
+      prefetchNextTmdbMovie(Array.from(sessionPlayedIds.current), newFilters);
     }
   };
 
@@ -245,25 +180,13 @@ export default function App() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       if (params.get('autostart') === '1') {
-        const excludeList = Array.from(sessionPlayedIds.current);
-        const excludeTitles = Array.from(sessionPlayedTitles.current);
-        startNewGameRound(filtersRef.current, excludeList, excludeTitles).then((roundData) => {
-          if (roundData && roundData.roundId) {
-            setActiveRound(roundData);
-            setRevealedMovie(null);
-            setRevealedTiers(roundData.revealedClues || 1);
-            setGameState('playing');
-          } else {
-            return startNewGameRound(filtersRef.current, [], []);
+        setGameState('playing');
+        fetchRandomTmdbMovie(Array.from(sessionPlayedIds.current), filters).then((m) => {
+          if (m) {
+            sessionPlayedIds.current.add(m.id);
+            setCurrentMovie(m);
           }
-        }).then((recoveryRound) => {
-          if (recoveryRound && recoveryRound.roundId) {
-            setActiveRound(recoveryRound);
-            setRevealedMovie(null);
-            setRevealedTiers(recoveryRound.revealedClues || 1);
-            setGameState('playing');
-          }
-        }).catch((err) => console.warn('Autostart recovery:', err));
+        });
       }
     }
   }, []);
@@ -318,104 +241,36 @@ export default function App() {
 
   const handleStartGame = async (mode: GameMode) => {
     playProjectorClick();
-    const activeFilters = filtersRef.current;
+    setGameMode(mode);
+    setCurrentMovieIndex(0);
+    setRevealedTiers(1);
+    setGuesses([]);
+    setUnlockedLetters(new Set());
+    setRoundStatus('playing');
+    setLastRoundPoints(0);
+    if (mode === 'speedrun') {
+      setSpeedrunTimer(15);
+    }
+    setGameState('playing');
     setIsLoadingMovie(true);
-    setShowExhaustedModal(false);
-    setGuessFeedbackMessage(null);
 
     try {
+      const activeFilters = filtersRef.current;
       const excludeList = Array.from(sessionPlayedIds.current);
-      const excludeTitles = Array.from(sessionPlayedTitles.current);
-      let roundData = await startNewGameRound(activeFilters, excludeList, excludeTitles);
-      if (!roundData || !roundData.roundId) {
-        sessionPlayedIds.current.clear();
-        sessionPlayedTitles.current.clear();
-        roundData = await startNewGameRound(activeFilters, [], []);
-      }
-      if (roundData && roundData.roundId) {
-        setActiveRound(roundData);
-        setRevealedMovie(null);
-        setGameMode(mode);
-        setCurrentMovieIndex(0);
-        setRevealedTiers(roundData.revealedClues || 1);
-        setGuesses([]);
-        setUnlockedLetters(new Set());
-        setRoundStatus('playing');
-        setLastRoundPoints(0);
-        if (mode === 'speedrun') {
-          setSpeedrunTimer(15);
-        }
-        setGameState('playing');
-      }
-    } catch (err) {
-      console.warn('Error starting game round, auto-retrying via TMDB:', err);
-      try {
-        sessionPlayedIds.current.clear();
-        sessionPlayedTitles.current.clear();
-        const roundData = await startNewGameRound(activeFilters, [], []);
-        if (roundData && roundData.roundId) {
-          setActiveRound(roundData);
-          setRevealedMovie(null);
-          setGameMode(mode);
-          setCurrentMovieIndex(0);
-          setRevealedTiers(roundData.revealedClues || 1);
-          setGuesses([]);
-          setUnlockedLetters(new Set());
-          setRoundStatus('playing');
-          setLastRoundPoints(0);
-          if (mode === 'speedrun') {
-            setSpeedrunTimer(15);
-          }
-          setGameState('playing');
-        }
-      } catch (innerErr) {
-        console.error('Recovery failed, using guaranteed fallback:', innerErr);
-        const { movie } = selectNonRepeatingMovie(
-          MOVIE_DATABASE,
-          activeFilters,
-          [],
-          [],
-          Math.random,
-          [],
-          { allowCycle: true }
-        );
-        const fallback = movie || MOVIE_DATABASE[0];
-        setActiveRound({
-          roundId: `local-${fallback.id}-${Date.now()}`,
-          totalClues: 5,
-          revealedClues: 1,
-          maxGuesses: 5,
-          remainingGuesses: 5,
-          imageUrls: (fallback.screenshots || []).map((s) => s.replace(/\/p\/w1280\//, '/p/w780/')),
-          decade: fallback.decade,
-          country: fallback.country || 'US',
-          genres: fallback.genres || ['Drama'],
-        });
-        setRevealedMovie(null);
-        setGameMode(mode);
-        setCurrentMovieIndex(0);
-        setRevealedTiers(1);
-        setGuesses([]);
-        setUnlockedLetters(new Set());
-        setRoundStatus('playing');
-        setLastRoundPoints(0);
-        if (mode === 'speedrun') {
-          setSpeedrunTimer(15);
-        }
-        setGameState('playing');
+      const movie = await fetchRandomTmdbMovie(excludeList, activeFilters);
+      if (movie) {
+        sessionPlayedIds.current.delete(movie.id);
+        sessionPlayedIds.current.add(movie.id);
+        setCurrentMovie(movie);
       }
     } finally {
       setIsLoadingMovie(false);
     }
   };
 
-  const handleRestartCurrentMovie = async () => {
+  const handleRestartCurrentMovie = () => {
     playProjectorClick();
     stopSpeaking();
-    setGuessFeedbackMessage(null);
-    if (!activeRound) return;
-
-    // Reset current round state locally (same movie clues)
     setRevealedTiers(1);
     setGuesses([]);
     setUnlockedLetters(new Set());
@@ -433,25 +288,20 @@ export default function App() {
     setSoundEnabled(next);
   };
 
-  const handleRevealNextTier = async () => {
-    if (revealedTiers < 5 && activeRound && roundStatus === 'playing') {
-      playClueRevealSound();
-      try {
-        const result = await revealNextRoundClue(activeRound.roundId);
-        setRevealedTiers(result.revealedClues);
-      } catch {
-        setRevealedTiers((prev) => Math.min(prev + 1, 5));
-      }
+  const handleRevealNextTier = () => {
+    if (revealedTiers < 5) {
+      setRevealedTiers((prev) => prev + 1);
     }
   };
 
   const availableLetters = useMemo(() => {
-    return revealedMovie ? getAvailableLetterHints(revealedMovie.title, unlockedLetters) : [];
-  }, [revealedMovie, unlockedLetters]);
+    return getAvailableLetterHints(currentMovie.title, unlockedLetters);
+  }, [currentMovie.title, unlockedLetters]);
 
   const handleUnlockLetter = () => {
     if (availableLetters.length === 0) return;
     playProjectorClick();
+    // Pick 1 random available letter
     const randomIndex = Math.floor(Math.random() * availableLetters.length);
     const chosenLetter = availableLetters[randomIndex];
     setUnlockedLetters((prev) => {
@@ -470,155 +320,116 @@ export default function App() {
     });
   }, [revealedTiers, guesses, streak, unlockedLetters.size]);
 
-  const handleMakeGuess = async (guessedTitle: string) => {
-    if (roundStatus !== 'playing' || !activeRound || isSubmittingGuess) return;
-    setIsSubmittingGuess(true);
-    setGuessFeedbackMessage(null);
+  const handleMakeGuess = (guessedTitle: string) => {
+    if (roundStatus !== 'playing') return;
 
-    try {
-      const result = await submitRoundGuess(activeRound.roundId, guessedTitle);
+    const isMatch = checkTitleMatch(guessedTitle, currentMovie.title);
 
-      if (result.error && !result.isGameOver) {
-        setGuessFeedbackMessage(result.error);
-        return;
-      }
+    // Look up year and genres from catalog or guess string
+    const catalogEntry = POPULAR_TITLES_CATALOG.find(
+      (m) => checkTitleMatch(m.title, guessedTitle)
+    );
+    const guessYear = catalogEntry ? catalogEntry.year : 0;
+    const guessGenres = catalogEntry ? catalogEntry.genres : [];
 
-      if (result.isCorrect) {
-        // VICTORY!
-        playCorrectGuessFanfare();
-        confetti({
-          particleCount: 80,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ['#E50914', '#ffffff', '#b3b3b3'],
-        });
+    const yearRelation = guessYear ? compareReleaseYear(guessYear, currentMovie.year) : 'exact';
+    const genreMatches = guessGenres.length > 0 ? findMatchingGenres(guessGenres, currentMovie.genres) : [];
+    const decadeMatch = guessYear ? Math.floor(guessYear / 10) === Math.floor(currentMovie.year / 10) : false;
 
-        const earned = result.pointsEarned ?? currentPointsYield;
-        const newStreak = streak + 1;
-        const tierAtSolve = revealedTiers;
-        setSolvedClueTier(tierAtSolve);
-        setLastRoundPoints(earned);
-        setSessionScore((prev) => prev + earned);
-        setStreak(newStreak);
-        setRoundStatus('won');
-        setRevealedTiers(5);
-        setRevealedMovie(result.movie || null);
-        if (result.movie) {
-          recordSessionMovie(result.movie);
-        }
-        setGameState('gameover');
-        setGuessFeedbackMessage(result.message || 'Correct! Brilliant deduction!');
+    const newRecord: GuessRecord = {
+      title: catalogEntry ? catalogEntry.title : guessedTitle,
+      year: guessYear,
+      genres: guessGenres,
+      isCorrect: isMatch,
+      yearRelation,
+      decadeMatch,
+      genreMatches,
+      guessNumber: guesses.length + 1,
+    };
 
-        // Update career stats
-        const clueKey = `clue${Math.min(tierAtSolve, 5)}` as keyof GameStats['clueDistribution'];
-        const updatedStats: GameStats = {
-          ...stats,
-          gamesPlayed: stats.gamesPlayed + 1,
-          gamesWon: stats.gamesWon + 1,
-          currentStreak: newStreak,
-          bestStreak: Math.max(stats.bestStreak, newStreak),
-          totalScore: stats.totalScore + earned,
-          clueDistribution: {
-            ...stats.clueDistribution,
-            [clueKey]: (stats.clueDistribution[clueKey] || 0) + 1,
-          },
-          solvedMovies: result.movie
-            ? Array.from(new Set([...stats.solvedMovies, result.movie.title]))
-            : stats.solvedMovies,
-        };
-        saveStats(updatedStats);
-      } else {
-        // WRONG GUESS
-        playWrongGuessSound();
+    const updatedGuesses = [...guesses, newRecord];
+    setGuesses(updatedGuesses);
 
-        if (result.guessRecord) {
-          setGuesses((prev) => [...prev, result.guessRecord]);
-        }
-        if (result.revealedClues) {
-          setRevealedTiers(result.revealedClues);
-        }
-        setGuessFeedbackMessage(result.message || 'Incorrect guess.');
-
-        if (result.isGameOver) {
-          // Out of guesses!
-          playLosingMusic();
-          stopSpeaking();
-          confetti({
-            particleCount: 60,
-            spread: 70,
-            origin: { y: 0.6 },
-            colors: ['#E50914', '#ffffff', '#737373'],
-          });
-          setSolvedClueTier(5);
-          setStreak(0);
-          setLastRoundPoints(0);
-          setRoundStatus('lost');
-          setRevealedTiers(5);
-          setRevealedMovie(result.movie || null);
-          if (result.movie) {
-            recordSessionMovie(result.movie);
-          }
-          setGameState('gameover');
-
-          const updatedStats: GameStats = {
-            ...stats,
-            gamesPlayed: stats.gamesPlayed + 1,
-            currentStreak: 0,
-          };
-          saveStats(updatedStats);
-        }
-      }
-    } catch (err) {
-      console.error('Error submitting guess:', err);
-      setGuessFeedbackMessage('Failed to validate guess. Please try again.');
-    } finally {
-      setIsSubmittingGuess(false);
-    }
-  };
-
-  const handleForfeitOrTimeout = async () => {
-    if (roundStatus !== 'playing' || !activeRound) return;
-    setIsLoadingMovie(true);
-    setGuessFeedbackMessage(null);
-
-    try {
-      const result = await skipGameRound(activeRound.roundId);
-      playLosingMusic();
-      stopSpeaking();
+    if (isMatch) {
+      // VICTORY!
+      playCorrectGuessFanfare();
       confetti({
-        particleCount: 60,
+        particleCount: 80,
         spread: 70,
         origin: { y: 0.6 },
-        colors: ['#E50914', '#ffffff', '#737373'],
+        colors: ['#E50914', '#ffffff', '#b3b3b3'],
       });
-      setSolvedClueTier(5);
-      setStreak(0);
-      setLastRoundPoints(0);
-      setRoundStatus('lost');
-      setRevealedTiers(5);
-      setRevealedMovie(result.movie);
-      if (result.movie) {
-        recordSessionMovie(result.movie);
-      }
+
+      const earned = currentPointsYield;
+      const newStreak = streak + 1;
+      const tierAtSolve = revealedTiers;
+      setSolvedClueTier(tierAtSolve);
+      setLastRoundPoints(earned);
+      setSessionScore((prev) => prev + earned);
+      setStreak(newStreak);
+      setRoundStatus('won');
+      setRevealedTiers(5); // unlock all 5 screenshots on win so player can view all scenes
       setGameState('gameover');
 
+      // Update career stats
+      const clueKey = `clue${Math.min(tierAtSolve, 5)}` as keyof GameStats['clueDistribution'];
       const updatedStats: GameStats = {
         ...stats,
         gamesPlayed: stats.gamesPlayed + 1,
-        currentStreak: 0,
+        gamesWon: stats.gamesWon + 1,
+        currentStreak: newStreak,
+        bestStreak: Math.max(stats.bestStreak, newStreak),
+        totalScore: stats.totalScore + earned,
+        clueDistribution: {
+          ...stats.clueDistribution,
+          [clueKey]: (stats.clueDistribution[clueKey] || 0) + 1,
+        },
+        solvedMovies: Array.from(new Set([...stats.solvedMovies, currentMovie.title])),
       };
       saveStats(updatedStats);
-    } catch (err) {
-      console.error('Error skipping round:', err);
-    } finally {
-      setIsLoadingMovie(false);
+    } else {
+      // WRONG GUESS
+      playWrongGuessSound();
+
+      if (updatedGuesses.length >= MAX_GUESSES_PER_ROUND) {
+        // Round Lost (Out of 5 guesses after all 5 clues)
+        handleForfeitOrTimeout();
+      } else {
+        // Automatically unlock next screenshot and deduct points step-by-step
+        if (revealedTiers < 5) {
+          setRevealedTiers((prev) => prev + 1);
+        }
+      }
     }
+  };
+
+  const handleForfeitOrTimeout = () => {
+    playLosingMusic();
+    stopSpeaking();
+    confetti({
+      particleCount: 60,
+      spread: 70,
+      origin: { y: 0.6 },
+      colors: ['#E50914', '#ffffff', '#737373'],
+    });
+    setSolvedClueTier(5);
+    setStreak(0);
+    setLastRoundPoints(0);
+    setRoundStatus('lost');
+    setRevealedTiers(5);
+    setGameState('gameover');
+
+    const updatedStats: GameStats = {
+      ...stats,
+      gamesPlayed: stats.gamesPlayed + 1,
+      currentStreak: 0,
+    };
+    saveStats(updatedStats);
   };
 
   const handleNextFilm = async () => {
     playProjectorClick();
     stopSpeaking();
-    setGuessFeedbackMessage(null);
 
     if (gameMode === 'daily') {
       setGameState('title');
@@ -626,21 +437,18 @@ export default function App() {
     }
 
     setIsLoadingMovie(true);
-    setShowExhaustedModal(false);
     try {
+      sessionPlayedIds.current.delete(currentMovie.id);
+      sessionPlayedIds.current.add(currentMovie.id);
+      const activeFilters = filtersRef.current;
       const excludeList = Array.from(sessionPlayedIds.current);
-      const excludeTitles = Array.from(sessionPlayedTitles.current);
-      let roundData = await startNewGameRound(filtersRef.current, excludeList, excludeTitles);
-      if (!roundData || !roundData.roundId) {
-        sessionPlayedIds.current.clear();
-        sessionPlayedTitles.current.clear();
-        roundData = await startNewGameRound(filtersRef.current, [], []);
-      }
-      if (roundData && roundData.roundId) {
-        setActiveRound(roundData);
-        setRevealedMovie(null);
+      const nextMovie = await fetchRandomTmdbMovie(excludeList, activeFilters);
+      if (nextMovie) {
+        sessionPlayedIds.current.delete(nextMovie.id);
+        sessionPlayedIds.current.add(nextMovie.id);
+        setCurrentMovie(nextMovie);
         setCurrentMovieIndex((prev) => prev + 1);
-        setRevealedTiers(roundData.revealedClues || 1);
+        setRevealedTiers(1);
         setGuesses([]);
         setUnlockedLetters(new Set());
         setRoundStatus('playing');
@@ -649,29 +457,6 @@ export default function App() {
           setSpeedrunTimer(15);
         }
         setGameState('playing');
-      }
-    } catch (err) {
-      console.warn('Error starting next film round, auto-retrying via TMDB:', err);
-      try {
-        sessionPlayedIds.current.clear();
-        sessionPlayedTitles.current.clear();
-        const roundData = await startNewGameRound(filtersRef.current, [], []);
-        if (roundData && roundData.roundId) {
-          setActiveRound(roundData);
-          setRevealedMovie(null);
-          setCurrentMovieIndex((prev) => prev + 1);
-          setRevealedTiers(roundData.revealedClues || 1);
-          setGuesses([]);
-          setUnlockedLetters(new Set());
-          setRoundStatus('playing');
-          setLastRoundPoints(0);
-          if (gameMode === 'speedrun') {
-            setSpeedrunTimer(15);
-          }
-          setGameState('playing');
-        }
-      } catch (innerErr) {
-        console.error('Recovery failed:', innerErr);
       }
     } finally {
       setIsLoadingMovie(false);
@@ -696,13 +481,7 @@ export default function App() {
           currentFilters={filters}
           soundEnabled={soundOn}
           onToggleSound={handleToggleSound}
-          isModalOpen={
-            showFilterModal ||
-            showStatsModal ||
-            showHowToPlayModal ||
-            showTmdbModal ||
-            showExhaustedModal
-          }
+          isModalOpen={showFilterModal || showStatsModal || showHowToPlayModal || showTmdbModal}
         />
       )}
 
@@ -737,8 +516,7 @@ export default function App() {
           <main className="w-full max-w-[1380px] mx-auto px-6 sm:px-10 pb-10 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
             <div className="lg:col-span-8 w-full flex flex-col">
               <ClueReel
-                movie={revealedMovie}
-                imageUrls={activeRound?.imageUrls || []}
+                movie={currentMovie}
                 revealedTiers={revealedTiers}
                 onRevealNextTier={handleRevealNextTier}
                 onRevealAnswer={handleForfeitOrTimeout}
@@ -753,7 +531,7 @@ export default function App() {
 
             <div className="lg:col-span-4 w-full flex flex-col">
               <GuessInput
-                movie={revealedMovie}
+                movie={currentMovie}
                 guesses={guesses}
                 maxGuesses={MAX_GUESSES_PER_ROUND}
                 onMakeGuess={handleMakeGuess}
@@ -764,8 +542,6 @@ export default function App() {
                 onRevealNextTier={handleRevealNextTier}
                 onUnlockLetter={handleUnlockLetter}
                 availableLetterCount={availableLetters.length}
-                isSubmitting={isSubmittingGuess}
-                feedbackMessage={guessFeedbackMessage}
               />
             </div>
           </main>
@@ -783,7 +559,7 @@ export default function App() {
       {(gameState === 'paused' || gameState === 'gameover') && (
         <StatusModal
           status={gameState === 'paused' ? 'paused' : roundStatus === 'won' ? 'won' : 'lost'}
-          movie={revealedMovie || currentMovie}
+          movie={currentMovie}
           pointsEarned={lastRoundPoints}
           cluesUsed={solvedClueTier}
           attemptsUsed={guesses.length}
@@ -821,56 +597,6 @@ export default function App() {
           currentFilters={filters}
           onApplyFilters={handleApplyFilters}
           onClose={() => setShowFilterModal(false)}
-        />
-      )}
-
-      {/* Exhausted Movie Pool Modal */}
-      {showExhaustedModal && (
-        <ExhaustedPoolModal
-          currentFilters={filters}
-          onClearFilters={async () => {
-            setShowExhaustedModal(false);
-            await handleApplyFilters(DEFAULT_FILTERS);
-          }}
-          onOpenFilters={() => {
-            setShowExhaustedModal(false);
-            setShowFilterModal(true);
-          }}
-          onResetSeen={async () => {
-            setShowExhaustedModal(false);
-            sessionPlayedIds.current.clear();
-            sessionPlayedTitles.current.clear();
-            resetSeenMovies();
-            if (gameState === 'title') {
-              handleStartGame(gameMode);
-            } else {
-              setIsLoadingMovie(true);
-              try {
-                const roundData = await startNewGameRound(filtersRef.current, [], []);
-                if (roundData && roundData.roundId) {
-                  setActiveRound(roundData);
-                  setRevealedMovie(null);
-                  setRevealedTiers(roundData.revealedClues || 1);
-                  setGuesses([]);
-                  setUnlockedLetters(new Set());
-                  setRoundStatus('playing');
-                  setLastRoundPoints(0);
-                  setGameState('playing');
-                }
-              } finally {
-                setIsLoadingMovie(false);
-              }
-            }
-          }}
-          onQuitToTitle={
-            gameState !== 'title'
-              ? () => {
-                  setShowExhaustedModal(false);
-                  stopSpeaking();
-                  setGameState('title');
-                }
-              : undefined
-          }
         />
       )}
     </div>

@@ -6,12 +6,7 @@ interface TmdbInfoModalProps {
 }
 
 export const TmdbInfoModal: React.FC<TmdbInfoModalProps> = ({ onClose }) => {
-  const [status, setStatus] = useState<{
-    connected: boolean;
-    liveTmdb?: boolean;
-    groqAi?: boolean;
-    message: string;
-  } | null>(null);
+  const [status, setStatus] = useState<{ connected: boolean; message: string } | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
   const checkStatus = async () => {
@@ -53,10 +48,10 @@ export const TmdbInfoModal: React.FC<TmdbInfoModalProps> = ({ onClose }) => {
           </div>
           <div>
             <h2 className="font-cinema text-xl sm:text-2xl font-bold text-white uppercase tracking-wider">
-              TMDB & Groq AI Cinema Engine
+              TMDB API Integration
             </h2>
             <p className="text-xs font-mono text-slate-400">
-              Live Film Catalog • Groq AI Curated Selection
+              The Movie Database • Live Film Catalog
             </p>
           </div>
         </div>
@@ -83,9 +78,7 @@ export const TmdbInfoModal: React.FC<TmdbInfoModalProps> = ({ onClose }) => {
                 {loading
                   ? 'Checking Connection...'
                   : status?.connected
-                  ? status?.groqAi
-                    ? 'TMDB & Groq AI Connected'
-                    : 'TMDB Connected & Active'
+                  ? 'Connected & Active'
                   : 'Not Connected Yet'}
               </h4>
               <button
@@ -97,15 +90,8 @@ export const TmdbInfoModal: React.FC<TmdbInfoModalProps> = ({ onClose }) => {
               </button>
             </div>
             <p className="text-xs mt-1 leading-relaxed opacity-90 font-sans">
-              {status?.message || 'Verifying cinema engine configuration...'}
+              {status?.message || 'Verifying TMDB configuration...'}
             </p>
-
-            {status?.groqAi && (
-              <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-900/60 border border-emerald-400/30 text-[11px] font-mono text-emerald-300">
-                <Sparkles className="w-3 h-3 text-amber-300" />
-                <span>Groq AI Active: Curating iconic films for your filters</span>
-              </div>
-            )}
           </div>
         </div>
 

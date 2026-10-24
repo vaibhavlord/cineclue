@@ -1,31 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { Movie } from '../types/movie';
 import { playProjectorClick } from '../utils/audio';
-import { Lock, Minimize2, Film, RefreshCw } from 'lucide-react';
+import { Lock, Minimize2 } from 'lucide-react';
 
 interface ClueReelProps {
-  movie?: Movie | null;
-  imageUrls?: string[];
+  movie: Movie;
   revealedTiers: number; // 1 to 5 screenshots
   onRevealNextTier: () => void;
   onRevealAnswer?: () => void;
   isSolved: boolean;
   isRoundOver?: boolean;
   scoreYield: number;
-  unlockedLetters?: Set<string>;
-  onUnlockLetter?: () => void;
-  availableLetterCount?: number;
+  unlockedLetters: Set<string>;
+  onUnlockLetter: () => void;
+  availableLetterCount: number;
 }
 
 export const ClueReel: React.FC<ClueReelProps> = ({
   movie,
-  imageUrls,
   revealedTiers,
   isSolved,
   isRoundOver = false,
 }) => {
   const [activeTab, setActiveTab] = useState<number>(1);
-  const [loadedImages, setLoadedImages] = useState<Record<number, boolean>>({});
   const [failedImages, setFailedImages] = useState<Record<number, boolean>>({});
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
 
@@ -34,21 +31,18 @@ export const ClueReel: React.FC<ClueReelProps> = ({
     setActiveTab(Math.min(revealedTiers, 5));
   }, [revealedTiers]);
 
-  const screenshotsList = imageUrls && imageUrls.length > 0 ? imageUrls : movie?.screenshots || [];
-
-  // Reset image state and preload all 5 screenshots in background without displaying early
+  // Reset failed image state and preload all 5 screenshots when movie changes
   useEffect(() => {
     setFailedImages({});
-    setLoadedImages({});
-    if (screenshotsList.length > 0) {
-      screenshotsList.forEach((url) => {
+    if (movie.screenshots && movie.screenshots.length > 0) {
+      movie.screenshots.forEach((url) => {
         if (url) {
           const img = new Image();
           img.src = url;
         }
       });
     }
-  }, [movie?.id, imageUrls]);
+  }, [movie.id, movie.screenshots]);
 
   // Allow keyboard 1-5 to switch between unlocked screenshots when not typing
   useEffect(() => {
@@ -67,9 +61,9 @@ export const ClueReel: React.FC<ClueReelProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [revealedTiers, isExpanded]);
 
+  const screenshotsList = movie.screenshots || [];
   const currentScreenshotUrl = screenshotsList[activeTab - 1] || null;
   const hasValidImage = Boolean(currentScreenshotUrl && !failedImages[activeTab]);
-  const isImageLoading = Boolean(hasValidImage && !loadedImages[activeTab]);
 
   return (
     <div className="w-full flex flex-col select-none">
@@ -78,83 +72,60 @@ export const ClueReel: React.FC<ClueReelProps> = ({
         {/* Card Header Bar */}
         <div className="px-5 h-11 flex items-center justify-between border-b border-white/[0.06] bg-[#1A1A19]">
           <div className="flex items-center gap-2.5">
-            <span className="w-2 h-2 rounded-full bg-[#EC5A49] inline-block animate-pulse" />
+            <span className="w-2 h-2 rounded-full bg-[#EC5A49] inline-block" />
             <span className="font-mono-code text-[12px] tracking-[0.14em] text-[#E6DFD3] uppercase">
-              CLUE {String(activeTab).padStart(2, '0')} / 05
+              SCENE {String(activeTab).padStart(2, '0')} / 05
             </span>
           </div>
 
           <span className="font-mono-code text-[11px] tracking-[0.16em] text-[#8E8A82] uppercase">
-            {5 - revealedTiers > 0
-              ? `${revealedTiers} OF 5 REVEALED · ${5 - revealedTiers} REMAINING`
-              : 'ALL 5 CLUES REVEALED'}
+            A FEW FRAMES. ONE FILM.
           </span>
         </div>
 
         {/* 16:9 Scene Image Viewport */}
         <div className="relative w-full aspect-video bg-[#10100F] overflow-hidden">
-          {/* Loading Skeleton */}
-          {isImageLoading && (
-            <div className="absolute inset-0 z-10 bg-[#121211] flex flex-col items-center justify-center animate-pulse">
-              <Film className="w-8 h-8 text-[#EC5A49]/50 mb-2.5" />
-              <span className="font-mono-code text-[11px] tracking-[0.14em] text-[#7A756E] uppercase">
-                LOADING CLUE FRAME {activeTab} / 05...
-              </span>
-            </div>
-          )}
-
           {hasValidImage ? (
             <>
               <img
-                key={`clue-frame-${activeTab}-${currentScreenshotUrl}`}
+                key={`${movie.id}-shot-${activeTab}`}
                 src={currentScreenshotUrl!}
-                alt={`Movie clue scene ${activeTab}`}
+                alt={`Scene ${activeTab}`}
                 referrerPolicy="no-referrer"
-                onLoad={() =>
-                  setLoadedImages((prev) => ({
-                    ...prev,
-                    [activeTab]: true,
-                  }))
-                }
                 onError={() =>
                   setFailedImages((prev) => ({
                     ...prev,
                     [activeTab]: true,
                   }))
                 }
-                className={`w-full h-full object-cover select-none block transition-opacity duration-300 ${
-                  isImageLoading ? 'opacity-0' : 'opacity-100'
-                }`}
+                className="w-full h-full object-cover select-none block"
                 draggable={false}
               />
 
               {/* Top-Right Fullscreen Expand Button */}
-              {!isImageLoading && (
-                <button
-                  type="button"
-                  onClick={() => setIsExpanded(true)}
-                  className="absolute top-3.5 right-3.5 w-9 h-9 rounded-lg bg-[#0D0D0C]/85 hover:bg-black border border-white/10 text-[#FDF5E1] flex items-center justify-center transition-colors cursor-pointer z-20"
-                  aria-label="Expand scene screenshot"
+              <button
+                type="button"
+                onClick={() => setIsExpanded(true)}
+                className="absolute top-3.5 right-3.5 w-9 h-9 rounded-lg bg-[#0D0D0C]/85 hover:bg-black border border-white/10 text-[#FDF5E1] flex items-center justify-center transition-colors cursor-pointer"
+                aria-label="Expand scene screenshot"
+              >
+                <svg
+                  viewBox="0 0 18 18"
+                  className="w-4 h-4 text-[#FDF5E1]"
+                  fill="none"
                 >
-                  <svg
-                    viewBox="0 0 18 18"
-                    className="w-4 h-4 text-[#FDF5E1]"
-                    fill="none"
-                  >
-                    <path
-                      d="M11 3H15V7M15 3L10.5 7.5M7 15H3V11M3 15L7.5 10.5"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
-              )}
+                  <path
+                    d="M11 3H15V7M15 3L10.5 7.5M7 15H3V11M3 15L7.5 10.5"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
 
-              {/* Revealed Movie Info Bar when round ends */}
-              {(isSolved || isRoundOver) && movie && (
-                <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-5 py-4 flex items-end justify-between z-20">
+              {(isSolved || isRoundOver) && (
+                <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-5 py-4 flex items-end justify-between">
                   <div>
                     <div className="font-cinema text-2xl tracking-wide text-[#FDF5E1] leading-none">
                       {movie.title} ({movie.year})
@@ -168,26 +139,58 @@ export const ClueReel: React.FC<ClueReelProps> = ({
             </>
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-[#151514]">
-              <div className="w-12 h-12 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mb-3">
-                <Film className="w-6 h-6 text-[#EC5A49]" />
-              </div>
-              <div className="font-cinema text-xl text-[#FDF5E1] uppercase tracking-wide">
-                CLUE FRAME {activeTab}
-              </div>
-              <p className="text-xs text-[#8E8A82] max-w-sm mt-1">
-                Frame image could not be loaded from TMDB. Try reloading this frame or inspecting other scenes.
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setFailedImages((prev) => ({ ...prev, [activeTab]: false }));
-                  setLoadedImages((prev) => ({ ...prev, [activeTab]: false }));
-                }}
-                className="mt-3.5 px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs text-[#FDF5E1] transition-colors flex items-center gap-2 cursor-pointer"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Retry Loading Frame</span>
-              </button>
+              {activeTab === 1 && (
+                <>
+                  <div className="text-4xl sm:text-5xl my-3 tracking-widest">
+                    {movie.emojiCryptogram}
+                  </div>
+                  <p className="text-xs text-[#9A948A] max-w-md">
+                    {movie.minimalistArt.description}
+                  </p>
+                </>
+              )}
+              {activeTab === 2 && (
+                <blockquote className="text-lg sm:text-xl text-[#FDF5E1] italic max-w-lg my-2">
+                  &ldquo;{movie.tagline.prompt}&rdquo;
+                </blockquote>
+              )}
+              {activeTab === 3 && (
+                <div className="max-w-lg my-2">
+                  <p className="text-xs text-[#9A948A] mb-1">
+                    {movie.quote.speakerRole}
+                  </p>
+                  <blockquote className="text-base sm:text-lg text-[#FDF5E1] italic">
+                    &ldquo;{movie.quote.dialogue}&rdquo;
+                  </blockquote>
+                </div>
+              )}
+              {activeTab === 4 && (
+                <div className="grid grid-cols-3 gap-2 w-full max-w-lg my-2">
+                  {movie.castDossier.map((c, idx) => (
+                    <div
+                      key={idx}
+                      className="p-2.5 rounded-lg bg-[#20201F] text-left"
+                    >
+                      <div className="text-xs text-[#EC5A49] font-bold">
+                        {c.actorInitials}
+                      </div>
+                      <div className="text-xs text-[#FDF5E1] mt-0.5">
+                        {c.archetype}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {activeTab === 5 && (
+                <div className="max-w-lg my-2 text-xs text-[#C2BCB0] space-y-1">
+                  <p className="text-[#FDF5E1] font-semibold">
+                    {movie.boxOfficeTrivia.oscars}
+                  </p>
+                  <p className="text-[#9A948A]">
+                    {movie.boxOfficeTrivia.secretTrivia}
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>

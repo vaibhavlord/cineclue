@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { X, Check } from 'lucide-react';
 import { MovieFilters } from '../types/movie';
-import { MAJOR_COUNTRIES, DECADE_OPTIONS, formatFilterSummary } from '../data/filterOptions';
+import { MAJOR_COUNTRIES, DECADE_OPTIONS } from '../data/filterOptions';
 import { playProjectorClick } from '../utils/audio';
 
 interface FilterModalProps {
@@ -15,44 +15,8 @@ export const FilterModal: React.FC<FilterModalProps> = ({
   onApplyFilters,
   onClose,
 }) => {
-  const [selectedCountries, setSelectedCountries] = useState<string[]>(
-    currentFilters.countries || []
-  );
-  const [selectedDecades, setSelectedDecades] = useState<string[]>(
-    currentFilters.decades || []
-  );
-
-  useEffect(() => {
-    setSelectedCountries(currentFilters.countries || []);
-    setSelectedDecades(currentFilters.decades || []);
-  }, [currentFilters]);
-
-  const commitAndClose = (countriesToCommit: string[], decadesToCommit: string[]) => {
-    const prevC = [...(currentFilters.countries || [])].sort().join(',');
-    const prevD = [...(currentFilters.decades || [])].sort().join(',');
-    const nextC = [...countriesToCommit].sort().join(',');
-    const nextD = [...decadesToCommit].sort().join(',');
-
-    if (prevC !== nextC || prevD !== nextD) {
-      onApplyFilters({
-        countries: countriesToCommit,
-        decades: decadesToCommit,
-      });
-    }
-    onClose();
-  };
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        commitAndClose(selectedCountries, selectedDecades);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [selectedCountries, selectedDecades, currentFilters]);
+  const [selectedCountries, setSelectedCountries] = useState<string[]>(currentFilters.countries);
+  const [selectedDecades, setSelectedDecades] = useState<string[]>(currentFilters.decades);
 
   const toggleCountry = (code: string) => {
     playProjectorClick();
@@ -83,38 +47,47 @@ export const FilterModal: React.FC<FilterModalProps> = ({
     onClose();
   };
 
-  const activeSummary = formatFilterSummary({
-    countries: selectedCountries,
-    decades: selectedDecades,
-  });
+  const handleClose = () => {
+    onApplyFilters({
+      countries: selectedCountries,
+      decades: selectedDecades,
+    });
+    onClose();
+  };
+
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Enter') {
+        e.stopPropagation();
+        handleSaveAndApply();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
+  }, [selectedCountries, selectedDecades]);
+
+  const activeCount = selectedCountries.length + selectedDecades.length;
 
   return (
-    <div
+    <div 
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80"
-      onClick={() => commitAndClose(selectedCountries, selectedDecades)}
+      onClick={handleClose}
     >
-      <div
+      <div 
         className="w-full max-w-xl bg-[#181818] border border-white/15 rounded-lg p-6 shadow-2xl relative max-h-[90vh] flex flex-col justify-between overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <button
-          type="button"
-          onClick={() => {
-            playProjectorClick();
-            commitAndClose(selectedCountries, selectedDecades);
-          }}
+          onClick={handleClose}
           className="absolute top-4 right-4 text-neutral-400 hover:text-white p-1.5 rounded hover:bg-white/10 transition-colors cursor-pointer"
           aria-label="Close Filter Dialog"
         >
           <X className="w-4 h-4" />
         </button>
 
-        <div className="mb-4 shrink-0 pr-8">
-          <h2 className="font-cinema text-2xl text-white tracking-wider">FILTERS</h2>
-          <p className="font-mono-code text-[11px] tracking-[0.12em] text-[#EC5A49] uppercase mt-0.5">
-            {activeSummary}
-          </p>
-        </div>
+        <h2 className="font-cinema text-2xl text-white tracking-wider mb-4 shrink-0">
+          FILTERS
+        </h2>
 
         <div className="flex-1 overflow-y-auto pr-1 space-y-6 select-none">
           {/* Countries */}
@@ -202,37 +175,24 @@ export const FilterModal: React.FC<FilterModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="pt-4 mt-4 border-t border-white/10 shrink-0 flex items-center justify-between gap-2">
-          <span className="text-xs text-neutral-400 truncate">
-            {selectedCountries.length === 0 && selectedDecades.length === 0
-              ? 'Showing all countries & decades'
-              : `${selectedCountries.length || 'All'} ${
-                  selectedCountries.length === 1 ? 'country' : 'countries'
-                } • ${selectedDecades.length || 'All'} ${
-                  selectedDecades.length === 1 ? 'decade' : 'decades'
-                }`}
-          </span>
+        <div className="pt-4 mt-4 border-t border-white/10 shrink-0 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={handleResetAll}
+            className="px-4 py-2.5 rounded bg-[#262626] hover:bg-[#333333] text-neutral-300 hover:text-white text-xs font-medium transition-colors cursor-pointer"
+          >
+            Reset
+          </button>
 
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={handleResetAll}
-              className="px-4 py-2.5 rounded bg-[#262626] hover:bg-[#333333] text-neutral-300 hover:text-white text-xs font-medium transition-colors cursor-pointer"
-            >
-              Reset
-            </button>
-
-            <button
-              type="button"
-              onClick={handleSaveAndApply}
-              className="px-6 py-2.5 rounded bg-[#EC5A49] hover:bg-[#F26655] text-[#141413] font-semibold text-xs transition-colors cursor-pointer"
-            >
-              Apply
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={handleSaveAndApply}
+            className="px-6 py-2.5 rounded bg-[#EC5A49] hover:bg-[#F26655] text-[#141413] font-bold text-xs transition-colors cursor-pointer shadow-[0_3px_0_0_#873329]"
+          >
+            {activeCount > 0 ? `Apply Filters (${activeCount})` : 'Apply (All Films)'}
+          </button>
         </div>
       </div>
     </div>
   );
 };
-
