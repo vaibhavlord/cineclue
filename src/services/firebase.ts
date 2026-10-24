@@ -24,12 +24,12 @@ function getEnv(key: string): string {
 }
 
 const firebaseConfig = {
-  apiKey: getEnv('VITE_FIREBASE_API_KEY') || getEnv('FIREBASE_API_KEY'),
-  authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN') || getEnv('FIREBASE_AUTH_DOMAIN'),
-  projectId: getEnv('VITE_FIREBASE_PROJECT_ID') || getEnv('FIREBASE_PROJECT_ID'),
-  storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET') || getEnv('FIREBASE_STORAGE_BUCKET'),
-  messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID') || getEnv('FIREBASE_MESSAGING_SENDER_ID'),
-  appId: getEnv('VITE_FIREBASE_APP_ID') || getEnv('FIREBASE_APP_ID'),
+  apiKey: getEnv('FIREBASE_API_KEY') || getEnv('VITE_FIREBASE_API_KEY'),
+  authDomain: getEnv('FIREBASE_AUTH_DOMAIN') || getEnv('VITE_FIREBASE_AUTH_DOMAIN'),
+  projectId: getEnv('FIREBASE_PROJECT_ID') || getEnv('VITE_FIREBASE_PROJECT_ID'),
+  storageBucket: getEnv('FIREBASE_STORAGE_BUCKET') || getEnv('VITE_FIREBASE_STORAGE_BUCKET'),
+  messagingSenderId: getEnv('FIREBASE_MESSAGING_SENDER_ID') || getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
+  appId: getEnv('FIREBASE_APP_ID') || getEnv('VITE_FIREBASE_APP_ID'),
 };
 
 export function isFirebaseConfigured(): boolean {
@@ -39,6 +39,35 @@ export function isFirebaseConfigured(): boolean {
     firebaseConfig.projectId &&
     firebaseConfig.projectId.trim().length > 0
   );
+}
+
+/**
+ * Loads Firebase config from server endpoint if missing from client bundle.
+ */
+export async function ensureFirebaseConfig(): Promise<boolean> {
+  if (isFirebaseConfigured()) return true;
+
+  try {
+    const res = await fetch('/api/firebase/config');
+    if (res.ok) {
+      const remoteConfig = await res.json();
+      if (remoteConfig.apiKey && remoteConfig.projectId) {
+        firebaseConfig.apiKey = remoteConfig.apiKey;
+        firebaseConfig.authDomain = remoteConfig.authDomain;
+        firebaseConfig.projectId = remoteConfig.projectId;
+        firebaseConfig.storageBucket = remoteConfig.storageBucket;
+        firebaseConfig.messagingSenderId = remoteConfig.messagingSenderId;
+        firebaseConfig.appId = remoteConfig.appId;
+
+        // Reset instance so it initializes with newly loaded credentials
+        firestoreInstance = null;
+        return isFirebaseConfigured();
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch remote Firebase config:', err);
+  }
+  return false;
 }
 
 let firestoreInstance: Firestore | null = null;
@@ -116,6 +145,10 @@ export function subscribeToMultiplayerRoom(
   };
 }
 
+function cleanForFirestore<T>(data: T): T {
+  return JSON.parse(JSON.stringify(data));
+}
+
 /**
  * Pushes room state to Firestore when Firebase is configured.
  */
@@ -125,7 +158,7 @@ export async function syncRoomStateToFirestore(room: RoomState): Promise<void> {
 
   try {
     const roomDocRef = doc(db, 'multiplayer_rooms', room.code.trim().toUpperCase());
-    await setDoc(roomDocRef, room, { merge: true });
+    await setDoc(roomDocRef, cleanForFirestore(room), { merge: true });
   } catch (err) {
     console.warn('Could not sync to Firestore:', err);
   }
@@ -183,11 +216,11 @@ export async function saveRoomToFirestore(
 
   try {
     const roomDocRef = doc(db, 'multiplayer_rooms', normCode);
-    await setDoc(roomDocRef, state, { merge: true });
+    await setDoc(roomDocRef, cleanForFirestore(state), { merge: true });
 
     if (secretTitles && secretTitles.length > 0) {
       const secretDocRef = doc(db, 'multiplayer_secrets', normCode);
-      await setDoc(secretDocRef, { secretTitles, updatedAt: Date.now() }, { merge: true });
+      await setDoc(secretDocRef, cleanForFirestore({ secretTitles, updatedAt: Date.now() }), { merge: true });
     }
   } catch (err) {
     console.warn('Could not save room to Firestore:', err);

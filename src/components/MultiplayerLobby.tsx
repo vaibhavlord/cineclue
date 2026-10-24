@@ -7,7 +7,11 @@ import {
   startMatch,
   leaveRoom,
 } from '../services/multiplayerService';
-import { subscribeToMultiplayerRoom, isFirebaseConfigured } from '../services/firebase';
+import {
+  subscribeToMultiplayerRoom,
+  isFirebaseConfigured,
+  ensureFirebaseConfig,
+} from '../services/firebase';
 import {
   Users,
   Copy,
@@ -50,6 +54,14 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [showFirebaseModal, setShowFirebaseModal] = useState<boolean>(false);
+  const [firebaseReady, setFirebaseReady] = useState<boolean>(() => isFirebaseConfigured());
+
+  // Check and load Firebase config from serverless endpoint if needed
+  useEffect(() => {
+    ensureFirebaseConfig().then((ready) => {
+      setFirebaseReady(ready);
+    });
+  }, []);
 
   // Active in-lobby room state
   const [currentRoom, setCurrentRoom] = useState<RoomState | null>(null);
@@ -214,14 +226,14 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({
               onClick={() => setShowFirebaseModal(true)}
               className="text-xs font-mono-code flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors cursor-pointer"
               style={{
-                backgroundColor: isFirebaseConfigured() ? 'rgba(234, 241, 138, 0.1)' : 'rgba(236, 90, 73, 0.15)',
-                borderColor: isFirebaseConfigured() ? 'rgba(234, 241, 138, 0.3)' : 'rgba(236, 90, 73, 0.4)',
-                color: isFirebaseConfigured() ? '#EAF18A' : '#EC5A49',
+                backgroundColor: firebaseReady ? 'rgba(234, 241, 138, 0.1)' : 'rgba(236, 90, 73, 0.15)',
+                borderColor: firebaseReady ? 'rgba(234, 241, 138, 0.3)' : 'rgba(236, 90, 73, 0.4)',
+                color: firebaseReady ? '#EAF18A' : '#EC5A49',
               }}
               title="Firebase Connection Status"
             >
               <Radio className="w-3 h-3" />
-              <span>{isFirebaseConfigured() ? 'Firestore Connected' : 'Setup Firebase'}</span>
+              <span>{firebaseReady ? 'Firestore Connected' : 'Setup Firebase'}</span>
             </button>
           </div>
         </header>
@@ -419,7 +431,7 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({
               Same film. Same clues. 60 seconds on the clock. First to buzz in with the right title scores.
             </p>
 
-            {!isFirebaseConfigured() && (
+            {!firebaseReady && (
               <div className="mt-4 p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/30 text-amber-200 text-xs text-left flex items-start gap-3">
                 <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                 <div className="flex-1">
