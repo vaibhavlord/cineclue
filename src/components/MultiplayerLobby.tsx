@@ -22,10 +22,6 @@ import {
   Flame,
   Radio,
   Share2,
-  AlertCircle,
-  Info,
-  ExternalLink,
-  X,
 } from 'lucide-react';
 import { playProjectorClick } from '../utils/audio';
 
@@ -53,7 +49,6 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
-  const [showFirebaseModal, setShowFirebaseModal] = useState<boolean>(false);
   const [firebaseReady, setFirebaseReady] = useState<boolean>(() => isFirebaseConfigured());
 
   // Check and load Firebase config from serverless endpoint if needed
@@ -221,20 +216,10 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({
               </span>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowFirebaseModal(true)}
-              className="text-xs font-mono-code flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors cursor-pointer"
-              style={{
-                backgroundColor: firebaseReady ? 'rgba(234, 241, 138, 0.1)' : 'rgba(236, 90, 73, 0.15)',
-                borderColor: firebaseReady ? 'rgba(234, 241, 138, 0.3)' : 'rgba(236, 90, 73, 0.4)',
-                color: firebaseReady ? '#EAF18A' : '#EC5A49',
-              }}
-              title="Firebase Connection Status"
-            >
-              <Radio className="w-3 h-3" />
-              <span>{firebaseReady ? 'Firestore Connected' : 'Setup Firebase'}</span>
-            </button>
+            <div className="flex items-center gap-1.5 text-xs text-[#8E8A82] font-mono-code">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#EAF18A] animate-pulse" />
+              <span>Live Duel</span>
+            </div>
           </div>
         </header>
 
@@ -430,26 +415,6 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({
             <p className="text-sm text-[#9A948A] mt-2 max-w-md mx-auto">
               Same film. Same clues. 60 seconds on the clock. First to buzz in with the right title scores.
             </p>
-
-            {!firebaseReady && (
-              <div className="mt-4 p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/30 text-amber-200 text-xs text-left flex items-start gap-3">
-                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <span className="font-semibold text-white block">Firebase Setup Required for Online Multiplayer</span>
-                  <span className="text-[11px] text-amber-200/80 mt-0.5 block">
-                    Connecting two devices across the internet requires a free Firebase Firestore project for real-time room sync.
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setShowFirebaseModal(true)}
-                    className="mt-1.5 text-[11px] font-bold text-amber-300 hover:text-white underline inline-flex items-center gap-1 cursor-pointer"
-                  >
-                    <span>View Quick 2-Min Setup Guide</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Mode Switcher Tabs */}
@@ -578,65 +543,6 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({
           )}
         </div>
       </main>
-
-      {/* Firebase Quick Setup Modal */}
-      {showFirebaseModal && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#1C1C1B] border border-white/10 rounded-2xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-white/10 mb-4">
-              <div className="flex items-center gap-2">
-                <Radio className="w-5 h-5 text-[#EC5A49]" />
-                <h3 className="font-cinema text-2xl text-white">FIREBASE 2-MIN SETUP</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowFirebaseModal(false)}
-                className="p-1 rounded-lg text-neutral-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4 text-xs text-[#C2BCB0] leading-relaxed">
-              <div className="p-3.5 rounded-xl bg-[#141414] border border-white/5">
-                <span className="font-bold text-white block mb-1">1. Create a Free Firebase Project</span>
-                <span>Go to <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" className="text-[#EC5A49] underline font-medium">console.firebase.google.com</a> and click <strong>Add project</strong>.</span>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-[#141414] border border-white/5">
-                <span className="font-bold text-white block mb-1">2. Enable Cloud Firestore Database</span>
-                <span>In the sidebar, navigate to <strong>Build &gt; Firestore Database</strong>, click <strong>Create database</strong>, and select <strong>Start in test mode</strong>.</span>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-[#141414] border border-white/5">
-                <span className="font-bold text-white block mb-1">3. Register a Web App &amp; Copy Keys</span>
-                <span>Click the <strong>Web (&lt;/&gt;)</strong> icon under "Get started by adding Firebase to your app". Copy the 6 configuration keys.</span>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-[#141414] border border-white/5">
-                <span className="font-bold text-white block mb-1">4. Add Environment Variables</span>
-                <span>Add these keys to your <strong>.env</strong> file (for local testing) and to your <strong>Vercel Project Settings &gt; Environment Variables</strong> (for production):</span>
-                <pre className="mt-2 p-2.5 rounded-lg bg-black text-[#EAF18A] font-mono-code text-[10px] overflow-x-auto select-all">
-VITE_FIREBASE_API_KEY="AIzaSy..."
-VITE_FIREBASE_AUTH_DOMAIN="your-app.firebaseapp.com"
-VITE_FIREBASE_PROJECT_ID="your-app"
-VITE_FIREBASE_STORAGE_BUCKET="your-app.firebasestorage.app"
-VITE_FIREBASE_MESSAGING_SENDER_ID="123456789"
-VITE_FIREBASE_APP_ID="1:123456789:web:abcdef"
-                </pre>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowFirebaseModal(false)}
-              className="mt-6 w-full h-11 rounded-xl bg-[#EC5A49] hover:bg-[#F26655] text-[#141413] font-cinema text-lg uppercase tracking-wider transition-colors cursor-pointer"
-            >
-              Got It
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

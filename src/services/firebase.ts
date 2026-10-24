@@ -23,13 +23,23 @@ function getEnv(key: string): string {
   return '';
 }
 
+// Built-in default Firebase project credentials for CineClue 1v1 battles
+const DEFAULT_FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyBePT2O2pGqdKL-xpT2kIubk35_XA4UGM4',
+  authDomain: 'cinefight.firebaseapp.com',
+  projectId: 'cinefight',
+  storageBucket: 'cinefight.firebasestorage.app',
+  messagingSenderId: '550374740039',
+  appId: '1:550374740039:web:0b7b4e4f994b6b31536162',
+};
+
 const firebaseConfig = {
-  apiKey: getEnv('FIREBASE_API_KEY') || getEnv('VITE_FIREBASE_API_KEY'),
-  authDomain: getEnv('FIREBASE_AUTH_DOMAIN') || getEnv('VITE_FIREBASE_AUTH_DOMAIN'),
-  projectId: getEnv('FIREBASE_PROJECT_ID') || getEnv('VITE_FIREBASE_PROJECT_ID'),
-  storageBucket: getEnv('FIREBASE_STORAGE_BUCKET') || getEnv('VITE_FIREBASE_STORAGE_BUCKET'),
-  messagingSenderId: getEnv('FIREBASE_MESSAGING_SENDER_ID') || getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
-  appId: getEnv('FIREBASE_APP_ID') || getEnv('VITE_FIREBASE_APP_ID'),
+  apiKey: getEnv('FIREBASE_API_KEY') || getEnv('VITE_FIREBASE_API_KEY') || DEFAULT_FIREBASE_CONFIG.apiKey,
+  authDomain: getEnv('FIREBASE_AUTH_DOMAIN') || getEnv('VITE_FIREBASE_AUTH_DOMAIN') || DEFAULT_FIREBASE_CONFIG.authDomain,
+  projectId: getEnv('FIREBASE_PROJECT_ID') || getEnv('VITE_FIREBASE_PROJECT_ID') || DEFAULT_FIREBASE_CONFIG.projectId,
+  storageBucket: getEnv('FIREBASE_STORAGE_BUCKET') || getEnv('VITE_FIREBASE_STORAGE_BUCKET') || DEFAULT_FIREBASE_CONFIG.storageBucket,
+  messagingSenderId: getEnv('FIREBASE_MESSAGING_SENDER_ID') || getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID') || DEFAULT_FIREBASE_CONFIG.messagingSenderId,
+  appId: getEnv('FIREBASE_APP_ID') || getEnv('VITE_FIREBASE_APP_ID') || DEFAULT_FIREBASE_CONFIG.appId,
 };
 
 export function isFirebaseConfigured(): boolean {

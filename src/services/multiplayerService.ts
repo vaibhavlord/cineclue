@@ -12,11 +12,11 @@ export async function createRoom(
     body: JSON.stringify({ hostName, filters }),
   });
 
-  if (!res.ok) {
-    throw new Error('Failed to create room.');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) {
+    throw new Error(data.error || 'Failed to create room.');
   }
 
-  const data = await res.json();
   if (data.room) {
     await syncRoomStateToFirestore(data.room);
   }
