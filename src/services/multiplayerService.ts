@@ -71,8 +71,17 @@ export async function joinRoom(
   return result;
 }
 
-export async function startMatch(code: string, playerId: string): Promise<RoomState> {
+export async function startMatch(
+  code: string,
+  playerId: string,
+  knownRoom?: RoomState
+): Promise<RoomState> {
   const normCode = code.trim().toUpperCase();
+
+  // If host already has both players in their synchronized room state, persist to Firestore first
+  if (knownRoom && Object.keys(knownRoom.players || {}).length >= 2) {
+    await syncRoomStateToFirestore(knownRoom);
+  }
 
   try {
     const res = await fetch('/api/multiplayer/room/start', {

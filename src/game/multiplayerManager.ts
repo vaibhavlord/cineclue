@@ -58,9 +58,8 @@ export function sanitizeMovieForClient(movie: Movie): MultiplayerMovieSafe {
 async function getInternalRoomRecord(code: string): Promise<InternalRoomRecord | null> {
   const normCode = code.trim().toUpperCase();
   const cached = rooms.get(normCode);
-  if (cached) return cached;
 
-  // Try loading from Firestore for stateless serverless functions across instances
+  // Always query Firestore first for authoritative, real-time room state across all devices
   try {
     const [remoteState, remoteSecrets] = await Promise.all([
       fetchRoomFromFirestore(normCode),
@@ -68,9 +67,14 @@ async function getInternalRoomRecord(code: string): Promise<InternalRoomRecord |
     ]);
 
     if (remoteState) {
+      const secretTitles =
+        remoteSecrets ||
+        cached?.secretTitles ||
+        remoteState.movieList.map((m) => m.tagline?.blank || '');
+
       const record: InternalRoomRecord = {
         state: remoteState,
-        secretTitles: remoteSecrets || remoteState.movieList.map((m) => m.tagline?.blank || ''),
+        secretTitles,
       };
       rooms.set(normCode, record);
       return record;
@@ -78,6 +82,9 @@ async function getInternalRoomRecord(code: string): Promise<InternalRoomRecord |
   } catch (err) {
     console.warn('Could not query Firestore for room:', err);
   }
+
+  // Fallback to in-memory cached record if Firestore is unreachable
+  if (cached) return cached;
 
   return null;
 }

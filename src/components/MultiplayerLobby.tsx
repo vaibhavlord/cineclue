@@ -148,7 +148,7 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({
     setErrorMessage('');
     setIsLoading(true);
     try {
-      const updated = await startMatch(currentRoom.code, myPlayerId);
+      const updated = await startMatch(currentRoom.code, myPlayerId, currentRoom);
       setCurrentRoom(updated);
       onMatchStarted(updated, myPlayerId);
     } catch (err: any) {
