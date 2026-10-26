@@ -22,14 +22,34 @@ const app = express();
 
 app.use(express.json());
 
-// Normalize URLs if routed through Vercel rewrites
+// Normalize incoming request URLs across Vercel serverless and local dev environments
 app.use((req, res, next) => {
-  if (req.url.startsWith('/api/index')) {
-    req.url = req.url.replace(/^\/api\/index/, '') || '/';
-  } else if (req.url.startsWith('/index')) {
-    req.url = req.url.replace(/^\/index/, '') || '/';
+  const forwarded =
+    (req.headers['x-forwarded-uri'] as string) ||
+    (req.headers['x-original-url'] as string) ||
+    (req.headers['x-matched-path'] as string);
+
+  if (forwarded && (forwarded.startsWith('/api') || forwarded.startsWith('/tmdb') || forwarded.startsWith('/firebase') || forwarded.startsWith('/multiplayer'))) {
+    req.url = forwarded;
+  } else if (req.url.startsWith('/api/index/')) {
+    req.url = req.url.replace(/^\/api\/index/, '');
+  } else if (req.url.startsWith('/index/')) {
+    req.url = req.url.replace(/^\/index/, '');
   }
   next();
+});
+
+// Root API Health & Diagnostic Endpoint for Vercel
+app.get(['/api', '/api/index'], (req: Request, res: Response) => {
+  const hasKey = Boolean(process.env.TMDB_API_KEY && process.env.TMDB_API_KEY.trim().length > 0);
+  res.json({
+    status: 'ok',
+    liveTmdb: hasKey,
+    archiveCount: MOVIE_DATABASE.length,
+    message: hasKey
+      ? 'CineClue API is running with live TMDB connected.'
+      : 'CineClue API is running. TMDB_API_KEY is not set in Vercel Environment Variables.',
+  });
 });
 
 // Check TMDB connection status
