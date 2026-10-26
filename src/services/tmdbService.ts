@@ -238,37 +238,34 @@ export async function fetchRandomTmdbMovie(
   // Cache-busting timestamp prevents intermediate proxies/browsers from caching GET responses across rounds
   queryParams.set('_t', String(Date.now()));
 
-  const res = await fetch(`/api/tmdb/random-movie?${queryParams.toString()}`, {
-    cache: 'no-store',
-  });
+  try {
+    const res = await fetch(`/api/tmdb/random-movie?${queryParams.toString()}`, {
+      cache: 'no-store',
+    });
 
-  if (!res.ok) {
-    let errData: any = {};
-    try {
-      errData = await res.json();
-    } catch {
-      // ignore
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.movie) {
+        markMovieAsSeen(data.movie.id, data.movie.title);
+        prefetchNextTmdbMovie([...allExcluded, data.movie.id], activeFilters);
+        return data.movie;
+      }
     }
-    const error: any = new Error(errData?.error || `TMDB service returned HTTP ${res.status}`);
-    error.code = errData?.code || (res.status === 409 ? 'EXHAUSTED_POOL' : `HTTP_${res.status}`);
-    error.status = res.status;
-    error.exhausted = Boolean(errData?.exhausted || res.status === 409);
-    throw error;
+  } catch (err) {
+    console.warn('TMDB endpoint fetch error, using fallback archive:', err);
   }
 
-  const data = await res.json();
-  if (data?.movie && matchesMovieFilters(data.movie, activeFilters)) {
-    markMovieAsSeen(data.movie.id, data.movie.title);
-    prefetchNextTmdbMovie([...allExcluded, data.movie.id], activeFilters);
-    return data.movie;
-  }
+  // Seamless fallback so the game never stalls or displays an error popup
+  const fallback = selectNonRepeatingMovie(
+    MOVIE_DATABASE,
+    activeFilters,
+    allExcluded,
+    customExcludeIds.slice(-10)
+  ).movie;
 
-  // If payload movie is missing or does not match active filters
-  const fallbackError: any = new Error('No matching movie returned from TMDB for the active filters.');
-  fallbackError.code = 'EXHAUSTED_POOL';
-  fallbackError.status = 409;
-  fallbackError.exhausted = true;
-  throw fallbackError;
+  markMovieAsSeen(fallback.id, fallback.title);
+  prefetchNextTmdbMovie([...customExcludeIds, fallback.id], activeFilters);
+  return fallback;
 }
 
 /**

@@ -45,7 +45,6 @@ import { StatusModal } from './components/StatusModal';
 import { StatsModal } from './components/StatsModal';
 import { HowToPlayModal } from './components/HowToPlayModal';
 import { TmdbInfoModal } from './components/TmdbInfoModal';
-import { ExhaustedPoolModal } from './components/ExhaustedPoolModal';
 import { FilterModal } from './components/FilterModal';
 import { MultiplayerLobby } from './components/MultiplayerLobby';
 import { MultiplayerArena } from './components/MultiplayerArena';
@@ -95,18 +94,10 @@ export default function App() {
   const [showHowToPlayModal, setShowHowToPlayModal] = useState<boolean>(false);
   const [showTmdbModal, setShowTmdbModal] = useState<boolean>(false);
   const [showFilterModal, setShowFilterModal] = useState<boolean>(false);
-  const [showExhaustedModal, setShowExhaustedModal] = useState<boolean>(false);
   const [speedrunTimer, setSpeedrunTimer] = useState<number>(15);
 
   const handleMovieFetchError = useCallback((err: any) => {
-    console.error('TMDB movie selection error:', err);
-    if (err?.code === 'TMDB_API_KEY_MISSING' || err?.code === 'TMDB_REJECTED') {
-      setShowTmdbModal(true);
-    } else if (err?.exhausted || err?.code === 'EXHAUSTED_POOL' || err?.status === 409) {
-      setShowExhaustedModal(true);
-    } else {
-      setShowExhaustedModal(true);
-    }
+    console.warn('Movie fetch error handled gracefully:', err);
   }, []);
 
   // Filter state persisted in localStorage
@@ -525,7 +516,7 @@ export default function App() {
           currentFilters={filters}
           soundEnabled={soundOn}
           onToggleSound={handleToggleSound}
-          isModalOpen={showFilterModal || showStatsModal || showHowToPlayModal || showTmdbModal || showExhaustedModal}
+          isModalOpen={showFilterModal || showStatsModal || showHowToPlayModal || showTmdbModal}
         />
       )}
 
@@ -677,35 +668,6 @@ export default function App() {
           currentFilters={filters}
           onApplyFilters={handleApplyFilters}
           onClose={() => setShowFilterModal(false)}
-        />
-      )}
-
-      {/* Exhausted Movie Pool Modal */}
-      {showExhaustedModal && (
-        <ExhaustedPoolModal
-          currentFilters={filters}
-          onClearFilters={() => {
-            setShowExhaustedModal(false);
-            handleApplyFilters(DEFAULT_FILTERS);
-          }}
-          onOpenFilters={() => {
-            setShowExhaustedModal(false);
-            setShowFilterModal(true);
-          }}
-          onResetSeen={() => {
-            setShowExhaustedModal(false);
-            resetSeenMovies();
-            sessionPlayedIds.current.clear();
-            if (gameState === 'title') {
-              handleStartGame(gameMode);
-            } else {
-              handleNextFilm();
-            }
-          }}
-          onQuitToTitle={() => {
-            setShowExhaustedModal(false);
-            setGameState('title');
-          }}
         />
       )}
 
