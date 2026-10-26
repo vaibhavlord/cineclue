@@ -4,6 +4,7 @@ import { DEFAULT_FILTERS } from '../data/filterOptions';
 import { matchesMovieFilters, normalizeTitle, selectNonRepeatingMovie } from '../game/rules';
 
 const SEEN_MOVIES_STORAGE_KEY = 'cineclue_seen_tmdb_ids_v1';
+const SEEN_TITLES_STORAGE_KEY = 'cineclue_seen_titles_v1';
 
 // In-memory seen tracking ensures non-repetition even on devices/webviews where localStorage is restricted
 const inMemorySeenIds = new Set<string>();
@@ -11,6 +12,32 @@ const inMemorySeenTitles = new Set<string>();
 
 function normalizeMovieId(id: string): string {
   return id.trim().replace(/^tmdb-/, '');
+}
+
+export function getSeenMovieTitles(): string[] {
+  const combined = new Set<string>(inMemorySeenTitles);
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(SEEN_TITLES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (typeof item === 'string' && item.trim()) {
+              const norm = normalizeTitle(item);
+              if (norm) {
+                combined.add(norm);
+                inMemorySeenTitles.add(norm);
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+  }
+  return Array.from(combined);
 }
 
 export function getSeenMovieIds(): string[] {
@@ -26,15 +53,6 @@ export function getSeenMovieIds(): string[] {
               const id = item.trim();
               combined.add(id);
               inMemorySeenIds.add(id);
-
-              // Restore inMemorySeenTitles from MOVIE_DATABASE across browser reloads
-              const matched = MOVIE_DATABASE.find(
-                (m) => m.id === id || normalizeMovieId(m.id) === normalizeMovieId(id)
-              );
-              if (matched) {
-                const normT = normalizeTitle(matched.title);
-                if (normT) inMemorySeenTitles.add(normT);
-              }
             }
           }
         }
@@ -50,8 +68,10 @@ export function markMovieAsSeen(id: string, title?: string): void {
   if (!id) return;
   const trimmedId = id.trim();
   inMemorySeenIds.add(trimmedId);
+
+  let normTitle = '';
   if (title) {
-    const normTitle = normalizeTitle(title);
+    normTitle = normalizeTitle(title);
     if (normTitle) inMemorySeenTitles.add(normTitle);
   }
 
@@ -60,10 +80,19 @@ export function markMovieAsSeen(id: string, title?: string): void {
     const norm = normalizeMovieId(trimmedId);
     const seen = getSeenMovieIds().filter((s) => s !== trimmedId && s !== norm);
     seen.push(trimmedId);
-    while (seen.length > 400) {
+    while (seen.length > 500) {
       seen.shift();
     }
     localStorage.setItem(SEEN_MOVIES_STORAGE_KEY, JSON.stringify(seen));
+
+    if (normTitle) {
+      const seenTitles = getSeenMovieTitles().filter((t) => t !== normTitle);
+      seenTitles.push(normTitle);
+      while (seenTitles.length > 500) {
+        seenTitles.shift();
+      }
+      localStorage.setItem(SEEN_TITLES_STORAGE_KEY, JSON.stringify(seenTitles));
+    }
   } catch {
     // Ignore storage quota/privacy errors
   }
@@ -103,9 +132,11 @@ export function clearSeenMoviePool(poolIdsToClear: string[], keepIds: string[] =
 export function resetSeenMovies(): void {
   inMemorySeenIds.clear();
   inMemorySeenTitles.clear();
+  clearMoviePrefetchCache();
   if (typeof window === 'undefined') return;
   try {
     localStorage.removeItem(SEEN_MOVIES_STORAGE_KEY);
+    localStorage.removeItem(SEEN_TITLES_STORAGE_KEY);
   } catch {
     // Ignore
   }
@@ -145,7 +176,7 @@ function isMovieAlreadyExcluded(movie: Movie, excludedIds: Iterable<string>): bo
     if (!ex) continue;
     const exTrim = ex.trim();
     const exClean = normalizeMovieId(exTrim);
-    if (exTrim === rawId || exClean === cleanId) {
+    if (exTrim === rawId || exClean === cleanId || `tmdb-${exClean}` === rawId) {
       return true;
     }
   }
@@ -158,7 +189,7 @@ function isMovieAlreadyExcluded(movie: Movie, excludedIds: Iterable<string>): bo
 }
 
 /**
- * Fetches a fresh, random, unrepeated movie from the TMDB backend endpoint or verified multi-country archive.
+ * Fetches a fresh, random, unrepeated movie from TMDB matching active filters.
  */
 export async function fetchRandomTmdbMovie(
   customExcludeIds: string[] = [],
@@ -169,10 +200,11 @@ export async function fetchRandomTmdbMovie(
     decades: filters?.decades || [],
   };
   const currentKey = buildFilterKey(activeFilters);
-  const seen = getSeenMovieIds();
-  const allExcluded = Array.from(new Set([...seen, ...customExcludeIds]));
+  const seenIds = getSeenMovieIds();
+  const seenTitles = getSeenMovieTitles();
+  const allExcluded = Array.from(new Set([...seenIds, ...customExcludeIds]));
 
-  // 1. If we already have a pre-fetched movie matching the active filters and not excluded, use it and mark it seen!
+  // 1. If we already have a pre-fetched movie matching active filters and not excluded, use it and mark it seen!
   if (
     cachedNextMovie &&
     cachedFiltersKey === currentKey &&
@@ -191,9 +223,12 @@ export async function fetchRandomTmdbMovie(
   // Clear any stale cached movie that did not match current filters or exclusions
   cachedNextMovie = null;
 
-  const excludeParam = allExcluded.slice(-120).join(',');
+  const excludeParam = allExcluded.slice(-150).join(',');
+  const excludeTitlesParam = seenTitles.slice(-100).map((t) => encodeURIComponent(t)).join('|');
+
   const queryParams = new URLSearchParams();
   if (excludeParam) queryParams.set('exclude', excludeParam);
+  if (excludeTitlesParam) queryParams.set('excludeTitles', excludeTitlesParam);
   if (activeFilters.countries.length > 0) {
     queryParams.set('countries', activeFilters.countries.join(','));
   }
@@ -203,45 +238,41 @@ export async function fetchRandomTmdbMovie(
   // Cache-busting timestamp prevents intermediate proxies/browsers from caching GET responses across rounds
   queryParams.set('_t', String(Date.now()));
 
-  try {
-    const res = await fetch(`/api/tmdb/random-movie?${queryParams.toString()}`, {
-      cache: 'no-store',
-    });
-    if (!res.ok) {
-      throw new Error(`TMDB endpoint returned ${res.status}`);
+  const res = await fetch(`/api/tmdb/random-movie?${queryParams.toString()}`, {
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    let errData: any = {};
+    try {
+      errData = await res.json();
+    } catch {
+      // ignore
     }
-    const data = await res.json();
-    if (data?.movie && matchesMovieFilters(data.movie, activeFilters)) {
-      if (data.didCycleFilterPool && Array.isArray(data.filterPoolIds)) {
-        clearSeenMoviePool(data.filterPoolIds, [...customExcludeIds.slice(-10), data.movie.id]);
-      }
-      markMovieAsSeen(data.movie.id, data.movie.title);
-      prefetchNextTmdbMovie([...allExcluded, data.movie.id], activeFilters);
-      return data.movie;
-    }
-  } catch (err) {
-    console.warn('Using local multi-country cinema archive:', err);
+    const error: any = new Error(errData?.error || `TMDB service returned HTTP ${res.status}`);
+    error.code = errData?.code || (res.status === 409 ? 'EXHAUSTED_POOL' : `HTTP_${res.status}`);
+    error.status = res.status;
+    error.exhausted = Boolean(errData?.exhausted || res.status === 409);
+    throw error;
   }
 
-  // 2. Fallback to curated & global multi-country archive strictly respecting active filters and exclusions
-  const selection = selectNonRepeatingMovie(
-    MOVIE_DATABASE,
-    activeFilters,
-    allExcluded,
-    customExcludeIds.slice(-10)
-  );
-
-  if (selection.didCycleFilterPool) {
-    clearSeenMoviePool(selection.filterPoolIds, customExcludeIds.slice(-10));
+  const data = await res.json();
+  if (data?.movie && matchesMovieFilters(data.movie, activeFilters)) {
+    markMovieAsSeen(data.movie.id, data.movie.title);
+    prefetchNextTmdbMovie([...allExcluded, data.movie.id], activeFilters);
+    return data.movie;
   }
 
-  markMovieAsSeen(selection.movie.id, selection.movie.title);
-  prefetchNextTmdbMovie([...customExcludeIds, selection.movie.id], activeFilters);
-  return selection.movie;
+  // If payload movie is missing or does not match active filters
+  const fallbackError: any = new Error('No matching movie returned from TMDB for the active filters.');
+  fallbackError.code = 'EXHAUSTED_POOL';
+  fallbackError.status = 409;
+  fallbackError.exhausted = true;
+  throw fallbackError;
 }
 
 /**
- * Pre-fetches the next movie in the background to ensure instantaneous transitions
+ * Pre-fetches the next movie in the background to ensure instantaneous round transitions
  */
 export async function prefetchNextTmdbMovie(
   excludedIds: string[] = [],
@@ -255,12 +286,15 @@ export async function prefetchNextTmdbMovie(
   const myGeneration = ++prefetchGeneration;
 
   try {
-    const seen = getSeenMovieIds();
-    const allExcluded = Array.from(new Set([...seen, ...excludedIds]));
-    const excludeParam = allExcluded.slice(-120).join(',');
+    const seenIds = getSeenMovieIds();
+    const seenTitles = getSeenMovieTitles();
+    const allExcluded = Array.from(new Set([...seenIds, ...excludedIds]));
+    const excludeParam = allExcluded.slice(-150).join(',');
+    const excludeTitlesParam = seenTitles.slice(-100).map((t) => encodeURIComponent(t)).join('|');
 
     const queryParams = new URLSearchParams();
     if (excludeParam) queryParams.set('exclude', excludeParam);
+    if (excludeTitlesParam) queryParams.set('excludeTitles', excludeTitlesParam);
     if (activeFilters.countries.length > 0) {
       queryParams.set('countries', activeFilters.countries.join(','));
     }
@@ -287,7 +321,7 @@ export async function prefetchNextTmdbMovie(
       }
     }
   } catch {
-    // Ignore prefetch errors
+    // Ignore prefetch background errors
   }
 }
 

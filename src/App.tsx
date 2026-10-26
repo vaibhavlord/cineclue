@@ -34,6 +34,7 @@ import {
   prefetchNextTmdbMovie,
   markMovieAsSeen,
   getSeenMovieIds,
+  resetSeenMovies,
 } from './services/tmdbService';
 import { DEFAULT_FILTERS } from './data/filterOptions';
 import { TitleScreen } from './components/TitleScreen';
@@ -44,6 +45,7 @@ import { StatusModal } from './components/StatusModal';
 import { StatsModal } from './components/StatsModal';
 import { HowToPlayModal } from './components/HowToPlayModal';
 import { TmdbInfoModal } from './components/TmdbInfoModal';
+import { ExhaustedPoolModal } from './components/ExhaustedPoolModal';
 import { FilterModal } from './components/FilterModal';
 import { MultiplayerLobby } from './components/MultiplayerLobby';
 import { MultiplayerArena } from './components/MultiplayerArena';
@@ -93,7 +95,19 @@ export default function App() {
   const [showHowToPlayModal, setShowHowToPlayModal] = useState<boolean>(false);
   const [showTmdbModal, setShowTmdbModal] = useState<boolean>(false);
   const [showFilterModal, setShowFilterModal] = useState<boolean>(false);
+  const [showExhaustedModal, setShowExhaustedModal] = useState<boolean>(false);
   const [speedrunTimer, setSpeedrunTimer] = useState<number>(15);
+
+  const handleMovieFetchError = useCallback((err: any) => {
+    console.error('TMDB movie selection error:', err);
+    if (err?.code === 'TMDB_API_KEY_MISSING' || err?.code === 'TMDB_REJECTED') {
+      setShowTmdbModal(true);
+    } else if (err?.exhausted || err?.code === 'EXHAUSTED_POOL' || err?.status === 409) {
+      setShowExhaustedModal(true);
+    } else {
+      setShowExhaustedModal(true);
+    }
+  }, []);
 
   // Filter state persisted in localStorage
   const [filters, setFilters] = useState<MovieFilters>(() => {
@@ -137,18 +151,10 @@ export default function App() {
 
   const sessionPlayedIds = useRef<Set<string>>(new Set());
 
+  // Initial title screen placeholder movie (not marked as seen until actually played)
   const [currentMovie, setCurrentMovie] = useState<Movie>(() => {
-    const seen = getSeenMovieIds();
-    const initial = selectNonRepeatingMovie(MOVIE_DATABASE, filters, seen).movie;
-    markMovieAsSeen(initial.id, initial.title);
-    return initial;
+    return MOVIE_DATABASE[0];
   });
-
-  useEffect(() => {
-    if (currentMovie?.id) {
-      sessionPlayedIds.current.add(currentMovie.id);
-    }
-  }, []);
 
   const [isLoadingMovie, setIsLoadingMovie] = useState<boolean>(false);
 
@@ -163,22 +169,11 @@ export default function App() {
       // Ignore
     }
 
-    // Immediately pick a matching movie for the active filters
-    const seen = getSeenMovieIds();
-    const quickPick = selectNonRepeatingMovie(
-      MOVIE_DATABASE,
-      newFilters,
-      Array.from(new Set([...seen, ...sessionPlayedIds.current]))
-    ).movie;
-    markMovieAsSeen(quickPick.id, quickPick.title);
-    sessionPlayedIds.current.add(quickPick.id);
-    setCurrentMovie(quickPick);
-
-    // If currently in active gameplay (playing, paused, or post-round modal), load a film matching the updated filters!
+    // If currently in active gameplay (playing, paused, or post-round modal), load a fresh film matching the updated filters!
     if ((gameState === 'playing' || gameState === 'paused' || gameState === 'gameover') && gameMode !== 'daily') {
       setIsLoadingMovie(true);
       try {
-        const excludeList = Array.from(new Set([...sessionPlayedIds.current, quickPick.id]));
+        const excludeList = Array.from(sessionPlayedIds.current);
         const movie = await fetchRandomTmdbMovie(excludeList, newFilters);
         if (movie) {
           sessionPlayedIds.current.add(movie.id);
@@ -193,6 +188,8 @@ export default function App() {
           }
           setGameState('playing');
         }
+      } catch (err: any) {
+        handleMovieFetchError(err);
       } finally {
         setIsLoadingMovie(false);
       }
@@ -212,15 +209,17 @@ export default function App() {
         setGameState('multiplayer-lobby');
       } else if (params.get('autostart') === '1') {
         setGameState('playing');
-        fetchRandomTmdbMovie(Array.from(sessionPlayedIds.current), filters).then((m) => {
-          if (m) {
-            sessionPlayedIds.current.add(m.id);
-            setCurrentMovie(m);
-          }
-        });
+        fetchRandomTmdbMovie(Array.from(sessionPlayedIds.current), filters)
+          .then((m) => {
+            if (m) {
+              sessionPlayedIds.current.add(m.id);
+              setCurrentMovie(m);
+            }
+          })
+          .catch((err) => handleMovieFetchError(err));
       }
     }
-  }, []);
+  }, [handleMovieFetchError, filters]);
 
   // Timer for Speedrun mode
   useEffect(() => {
@@ -287,15 +286,14 @@ export default function App() {
 
     try {
       const activeFilters = filtersRef.current;
-      if (currentMovie?.id) {
-        sessionPlayedIds.current.add(currentMovie.id);
-      }
       const excludeList = Array.from(sessionPlayedIds.current);
       const movie = await fetchRandomTmdbMovie(excludeList, activeFilters);
       if (movie) {
         sessionPlayedIds.current.add(movie.id);
         setCurrentMovie(movie);
       }
+    } catch (err: any) {
+      handleMovieFetchError(err);
     } finally {
       setIsLoadingMovie(false);
     }
@@ -393,6 +391,11 @@ export default function App() {
         colors: ['#E50914', '#ffffff', '#b3b3b3'],
       });
 
+      if (currentMovie?.id) {
+        sessionPlayedIds.current.add(currentMovie.id);
+        markMovieAsSeen(currentMovie.id, currentMovie.title);
+      }
+
       const earned = currentPointsYield;
       const newStreak = streak + 1;
       const tierAtSolve = revealedTiers;
@@ -439,6 +442,10 @@ export default function App() {
   const handleForfeitOrTimeout = () => {
     playLosingMusic();
     stopSpeaking();
+    if (currentMovie?.id) {
+      sessionPlayedIds.current.add(currentMovie.id);
+      markMovieAsSeen(currentMovie.id, currentMovie.title);
+    }
     confetti({
       particleCount: 60,
       spread: 70,
@@ -473,6 +480,7 @@ export default function App() {
     try {
       if (currentMovie?.id) {
         sessionPlayedIds.current.add(currentMovie.id);
+        markMovieAsSeen(currentMovie.id, currentMovie.title);
       }
       const activeFilters = filtersRef.current;
       const excludeList = Array.from(sessionPlayedIds.current);
@@ -491,6 +499,8 @@ export default function App() {
         }
         setGameState('playing');
       }
+    } catch (err: any) {
+      handleMovieFetchError(err);
     } finally {
       setIsLoadingMovie(false);
     }
@@ -515,7 +525,7 @@ export default function App() {
           currentFilters={filters}
           soundEnabled={soundOn}
           onToggleSound={handleToggleSound}
-          isModalOpen={showFilterModal || showStatsModal || showHowToPlayModal || showTmdbModal}
+          isModalOpen={showFilterModal || showStatsModal || showHowToPlayModal || showTmdbModal || showExhaustedModal}
         />
       )}
 
@@ -667,6 +677,35 @@ export default function App() {
           currentFilters={filters}
           onApplyFilters={handleApplyFilters}
           onClose={() => setShowFilterModal(false)}
+        />
+      )}
+
+      {/* Exhausted Movie Pool Modal */}
+      {showExhaustedModal && (
+        <ExhaustedPoolModal
+          currentFilters={filters}
+          onClearFilters={() => {
+            setShowExhaustedModal(false);
+            handleApplyFilters(DEFAULT_FILTERS);
+          }}
+          onOpenFilters={() => {
+            setShowExhaustedModal(false);
+            setShowFilterModal(true);
+          }}
+          onResetSeen={() => {
+            setShowExhaustedModal(false);
+            resetSeenMovies();
+            sessionPlayedIds.current.clear();
+            if (gameState === 'title') {
+              handleStartGame(gameMode);
+            } else {
+              handleNextFilm();
+            }
+          }}
+          onQuitToTitle={() => {
+            setShowExhaustedModal(false);
+            setGameState('title');
+          }}
         />
       )}
 
