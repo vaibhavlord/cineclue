@@ -32,15 +32,15 @@ app.use((req, res, next) => {
   if (forwarded && (forwarded.startsWith('/api') || forwarded.startsWith('/tmdb') || forwarded.startsWith('/firebase') || forwarded.startsWith('/multiplayer'))) {
     req.url = forwarded;
   } else if (req.url.startsWith('/api/index/')) {
-    req.url = req.url.replace(/^\/api\/index/, '');
+    req.url = req.url.replace(/^\/api\/index/, '') || '/';
   } else if (req.url.startsWith('/index/')) {
-    req.url = req.url.replace(/^\/index/, '');
+    req.url = req.url.replace(/^\/index/, '') || '/';
   }
   next();
 });
 
 // Root API Health & Diagnostic Endpoint for Vercel
-app.get(['/api', '/api/index'], (req: Request, res: Response) => {
+app.get(['/', '/api', '/api/index'], (req: Request, res: Response) => {
   const hasKey = Boolean(process.env.TMDB_API_KEY && process.env.TMDB_API_KEY.trim().length > 0);
   res.json({
     status: 'ok',
