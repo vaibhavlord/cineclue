@@ -1,4 +1,4 @@
-import type { CountryOption, DecadeOption, MovieFilters } from '../types/movie.ts';
+import type { CountryOption, DecadeOption, MovieFilters } from '../types/movie';
 
 export const MAJOR_COUNTRIES: CountryOption[] = [
   { code: 'US', name: 'United States', flag: '🇺🇸' },

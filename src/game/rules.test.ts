@@ -12,15 +12,15 @@ import {
   selectDistinctSceneScreenshots,
   matchesMovieFilters,
   selectNonRepeatingMovie,
-} from './rules.ts';
+} from './rules';
 import {
   isFilterActive,
   formatFilterSummary,
   DEFAULT_FILTERS,
   MAJOR_COUNTRIES,
   DECADE_OPTIONS,
-} from '../data/filterOptions.ts';
-import { MOVIE_DATABASE } from '../data/movies.ts';
+} from '../data/filterOptions';
+import { MOVIE_DATABASE } from '../data/movies';
 
 test('scoring gives 1000 base points on first clue with 0 incorrect guesses', () => {
   const score = calculateScore({
@@ -245,7 +245,7 @@ import {
   getMultiplayerRoom,
   _resetMultiplayerRooms,
   _getInternalRoom,
-} from './multiplayerManager.ts';
+} from './multiplayerManager';
 
 test('createMultiplayerRoom generates 6-char code, sanitizes movies for client, and enforces filters', async () => {
   _resetMultiplayerRooms();

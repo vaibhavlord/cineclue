@@ -1,6 +1,6 @@
-import type { Movie } from '../types/movie.ts';
-import { GLOBAL_MOVIES_ARCHIVE } from './globalMoviesArchive.ts';
-import { normalizeTitle } from '../game/rules.ts';
+import type { Movie } from '../types/movie';
+import { GLOBAL_MOVIES_ARCHIVE } from './globalMoviesArchive';
+import { normalizeTitle } from '../game/rules';
 
 export const CURATED_MOVIES: Movie[] = [
   {

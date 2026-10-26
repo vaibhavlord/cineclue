@@ -5,8 +5,8 @@ import {
   selectDistinctSceneScreenshots,
   selectNonRepeatingMovie,
   normalizeTitle,
-} from './game/rules.ts';
-import { MOVIE_DATABASE, POPULAR_TITLES_CATALOG } from './data/movies.ts';
+} from './game/rules';
+import { MOVIE_DATABASE, POPULAR_TITLES_CATALOG } from './data/movies';
 import {
   createMultiplayerRoom,
   joinMultiplayerRoom,
@@ -14,7 +14,7 @@ import {
   submitMultiplayerGuess,
   leaveMultiplayerRoom,
   getMultiplayerRoom,
-} from './game/multiplayerManager.ts';
+} from './game/multiplayerManager';
 
 dotenv.config();
 
