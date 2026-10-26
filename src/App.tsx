@@ -32,6 +32,8 @@ import {
   clearMoviePrefetchCache,
   fetchRandomTmdbMovie,
   prefetchNextTmdbMovie,
+  markMovieAsSeen,
+  getSeenMovieIds,
 } from './services/tmdbService';
 import { DEFAULT_FILTERS } from './data/filterOptions';
 import { TitleScreen } from './components/TitleScreen';
@@ -133,11 +135,22 @@ export default function App() {
   const filtersRef = useRef<MovieFilters>(filters);
   filtersRef.current = filters;
 
-  const [currentMovie, setCurrentMovie] = useState<Movie>(() => {
-    return selectNonRepeatingMovie(MOVIE_DATABASE, filters, []).movie;
-  });
-  const [isLoadingMovie, setIsLoadingMovie] = useState<boolean>(false);
   const sessionPlayedIds = useRef<Set<string>>(new Set());
+
+  const [currentMovie, setCurrentMovie] = useState<Movie>(() => {
+    const seen = getSeenMovieIds();
+    const initial = selectNonRepeatingMovie(MOVIE_DATABASE, filters, seen).movie;
+    markMovieAsSeen(initial.id, initial.title);
+    return initial;
+  });
+
+  useEffect(() => {
+    if (currentMovie?.id) {
+      sessionPlayedIds.current.add(currentMovie.id);
+    }
+  }, []);
+
+  const [isLoadingMovie, setIsLoadingMovie] = useState<boolean>(false);
 
   // Apply filters handler
   const handleApplyFilters = async (newFilters: MovieFilters) => {
@@ -151,11 +164,14 @@ export default function App() {
     }
 
     // Immediately pick a matching movie for the active filters
+    const seen = getSeenMovieIds();
     const quickPick = selectNonRepeatingMovie(
       MOVIE_DATABASE,
       newFilters,
-      Array.from(sessionPlayedIds.current)
+      Array.from(new Set([...seen, ...sessionPlayedIds.current]))
     ).movie;
+    markMovieAsSeen(quickPick.id, quickPick.title);
+    sessionPlayedIds.current.add(quickPick.id);
     setCurrentMovie(quickPick);
 
     // If currently in active gameplay (playing, paused, or post-round modal), load a film matching the updated filters!
@@ -271,10 +287,12 @@ export default function App() {
 
     try {
       const activeFilters = filtersRef.current;
+      if (currentMovie?.id) {
+        sessionPlayedIds.current.add(currentMovie.id);
+      }
       const excludeList = Array.from(sessionPlayedIds.current);
       const movie = await fetchRandomTmdbMovie(excludeList, activeFilters);
       if (movie) {
-        sessionPlayedIds.current.delete(movie.id);
         sessionPlayedIds.current.add(movie.id);
         setCurrentMovie(movie);
       }
@@ -453,13 +471,13 @@ export default function App() {
 
     setIsLoadingMovie(true);
     try {
-      sessionPlayedIds.current.delete(currentMovie.id);
-      sessionPlayedIds.current.add(currentMovie.id);
+      if (currentMovie?.id) {
+        sessionPlayedIds.current.add(currentMovie.id);
+      }
       const activeFilters = filtersRef.current;
       const excludeList = Array.from(sessionPlayedIds.current);
       const nextMovie = await fetchRandomTmdbMovie(excludeList, activeFilters);
       if (nextMovie) {
-        sessionPlayedIds.current.delete(nextMovie.id);
         sessionPlayedIds.current.add(nextMovie.id);
         setCurrentMovie(nextMovie);
         setCurrentMovieIndex((prev) => prev + 1);

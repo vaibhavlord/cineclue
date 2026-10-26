@@ -4,6 +4,7 @@ import {
   matchesMovieFilters,
   selectDistinctSceneScreenshots,
   selectNonRepeatingMovie,
+  normalizeTitle,
 } from './game/rules.ts';
 import { MOVIE_DATABASE, POPULAR_TITLES_CATALOG } from './data/movies.ts';
 import {
@@ -151,8 +152,27 @@ function deriveDecade(year: number): string {
 // Random TMDB Movie Endpoint
 app.get(['/api/tmdb/random-movie', '/tmdb/random-movie'], async (req: Request, res: Response) => {
   const apiKey = process.env.TMDB_API_KEY;
-  const excludeParam = (req.query.exclude as string) || '';
-  const excludedIds = new Set(excludeParam.split(',').filter(Boolean));
+  const rawExcludes = ((req.query.exclude as string) || '').split(',').filter(Boolean);
+
+  // Normalize excluded IDs in both raw and 'tmdb-' prefixed forms
+  const excludedIds = new Set<string>();
+  for (const raw of rawExcludes) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const clean = trimmed.replace(/^tmdb-/, '');
+    excludedIds.add(trimmed);
+    excludedIds.add(clean);
+    excludedIds.add(`tmdb-${clean}`);
+  }
+
+  // Pre-collect normalized titles of excluded movies
+  const excludedTitles = new Set<string>();
+  for (const m of MOVIE_DATABASE) {
+    if (excludedIds.has(m.id) || excludedIds.has(m.id.replace(/^tmdb-/, ''))) {
+      const norm = normalizeTitle(m.title);
+      if (norm) excludedTitles.add(norm);
+    }
+  }
 
   let reqFilters = { countries: [] as string[], decades: [] as string[] };
   if (req.query.countries) {
@@ -162,10 +182,24 @@ app.get(['/api/tmdb/random-movie', '/tmdb/random-movie'], async (req: Request, r
     reqFilters.decades = (req.query.decades as string).split(',').filter(Boolean);
   }
 
+  const serveOfflineMovie = () => {
+    const selection = selectNonRepeatingMovie(
+      MOVIE_DATABASE,
+      reqFilters,
+      excludedIds,
+      rawExcludes.slice(-10) // Strictly avoid last 10 played movies even if pool cycles
+    );
+    res.json({
+      movie: selection.movie,
+      didCycleFilterPool: selection.didCycleFilterPool,
+      filterPoolIds: selection.filterPoolIds,
+      source: 'offline-archive',
+    });
+  };
+
   // Fallback to offline curated database if TMDB API key is missing
   if (!apiKey || apiKey.trim().length === 0) {
-    const { movie } = selectNonRepeatingMovie(MOVIE_DATABASE, reqFilters, excludedIds);
-    res.json({ movie, source: 'offline-archive' });
+    serveOfflineMovie();
     return;
   }
 
@@ -191,16 +225,18 @@ app.get(['/api/tmdb/random-movie', '/tmdb/random-movie'], async (req: Request, r
     }
   }
 
-  const randomPage = Math.floor(Math.random() * 8) + 1;
-  const voteCountThreshold = (hasCountryFilter || hasDecadeFilter) ? 100 : 350;
+  const sortOptions = ['vote_count.desc', 'popularity.desc', 'revenue.desc'];
+  const chosenSort = sortOptions[Math.floor(Math.random() * sortOptions.length)];
+  const maxPages = (hasCountryFilter || hasDecadeFilter) ? 12 : 30;
+  const randomPage = Math.floor(Math.random() * maxPages) + 1;
+  const voteCountThreshold = (hasCountryFilter || hasDecadeFilter) ? 60 : 200;
 
   try {
-    const discoverUrl = `https://api.themoviedb.org/3/discover/movie?api_key=${apiKey}&sort_by=vote_count.desc&vote_count.gte=${voteCountThreshold}&include_adult=false&include_video=false&page=${randomPage}${originCountryParam}${releaseDateFilter}`;
+    const discoverUrl = `https://api.themoviedb.org/3/discover/movie?api_key=${apiKey}&sort_by=${chosenSort}&vote_count.gte=${voteCountThreshold}&include_adult=false&include_video=false&page=${randomPage}${originCountryParam}${releaseDateFilter}`;
     const discRes = await fetch(discoverUrl);
 
     if (!discRes.ok) {
-      const { movie } = selectNonRepeatingMovie(MOVIE_DATABASE, reqFilters, excludedIds);
-      res.json({ movie, source: 'offline-archive' });
+      serveOfflineMovie();
       return;
     }
 
@@ -211,12 +247,13 @@ app.get(['/api/tmdb/random-movie', '/tmdb/random-movie'], async (req: Request, r
         m.backdrop_path &&
         m.overview &&
         m.overview.length > 20 &&
-        !excludedIds.has(String(m.id))
+        !excludedIds.has(String(m.id)) &&
+        !excludedIds.has(`tmdb-${m.id}`) &&
+        !excludedTitles.has(normalizeTitle(m.title || ''))
     );
 
     if (candidates.length === 0) {
-      const { movie } = selectNonRepeatingMovie(MOVIE_DATABASE, reqFilters, excludedIds);
-      res.json({ movie, source: 'offline-archive' });
+      serveOfflineMovie();
       return;
     }
 
@@ -232,8 +269,7 @@ app.get(['/api/tmdb/random-movie', '/tmdb/random-movie'], async (req: Request, r
     ]);
 
     if (!detailsRes.ok) {
-      const { movie } = selectNonRepeatingMovie(MOVIE_DATABASE, reqFilters, excludedIds);
-      res.json({ movie, source: 'offline-archive' });
+      serveOfflineMovie();
       return;
     }
 
@@ -262,9 +298,11 @@ app.get(['/api/tmdb/random-movie', '/tmdb/random-movie'], async (req: Request, r
       country: movieCountry,
     };
 
-    if (!matchesMovieFilters(candidateMovieMeta, reqFilters)) {
-      const { movie } = selectNonRepeatingMovie(MOVIE_DATABASE, reqFilters, excludedIds);
-      res.json({ movie, source: 'offline-archive' });
+    if (
+      !matchesMovieFilters(candidateMovieMeta, reqFilters) ||
+      excludedTitles.has(normalizeTitle(details.title || ''))
+    ) {
+      serveOfflineMovie();
       return;
     }
 
@@ -279,8 +317,7 @@ app.get(['/api/tmdb/random-movie', '/tmdb/random-movie'], async (req: Request, r
     );
 
     if (distinctScreenshots.length < 5) {
-      const { movie } = selectNonRepeatingMovie(MOVIE_DATABASE, reqFilters, excludedIds);
-      res.json({ movie, source: 'offline-archive' });
+      serveOfflineMovie();
       return;
     }
 
@@ -356,8 +393,7 @@ app.get(['/api/tmdb/random-movie', '/tmdb/random-movie'], async (req: Request, r
 
     res.json({ movie: fullMoviePayload, source: 'tmdb-live' });
   } catch (err) {
-    const { movie } = selectNonRepeatingMovie(MOVIE_DATABASE, reqFilters, excludedIds);
-    res.json({ movie, source: 'offline-archive' });
+    serveOfflineMovie();
   }
 });
 

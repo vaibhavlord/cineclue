@@ -23,8 +23,18 @@ export function getSeenMovieIds(): string[] {
         if (Array.isArray(parsed)) {
           for (const item of parsed) {
             if (typeof item === 'string' && item.trim()) {
-              combined.add(item.trim());
-              inMemorySeenIds.add(item.trim());
+              const id = item.trim();
+              combined.add(id);
+              inMemorySeenIds.add(id);
+
+              // Restore inMemorySeenTitles from MOVIE_DATABASE across browser reloads
+              const matched = MOVIE_DATABASE.find(
+                (m) => m.id === id || normalizeMovieId(m.id) === normalizeMovieId(id)
+              );
+              if (matched) {
+                const normT = normalizeTitle(matched.title);
+                if (normT) inMemorySeenTitles.add(normT);
+              }
             }
           }
         }
@@ -167,6 +177,8 @@ export async function fetchRandomTmdbMovie(
     cachedNextMovie &&
     cachedFiltersKey === currentKey &&
     !isMovieAlreadyExcluded(cachedNextMovie, allExcluded) &&
+    !customExcludeIds.includes(cachedNextMovie.id) &&
+    !customExcludeIds.map(normalizeMovieId).includes(normalizeMovieId(cachedNextMovie.id)) &&
     matchesMovieFilters(cachedNextMovie, activeFilters)
   ) {
     const movieToReturn = cachedNextMovie;
@@ -201,7 +213,7 @@ export async function fetchRandomTmdbMovie(
     const data = await res.json();
     if (data?.movie && matchesMovieFilters(data.movie, activeFilters)) {
       if (data.didCycleFilterPool && Array.isArray(data.filterPoolIds)) {
-        clearSeenMoviePool(data.filterPoolIds, [...customExcludeIds.slice(-5), data.movie.id]);
+        clearSeenMoviePool(data.filterPoolIds, [...customExcludeIds.slice(-10), data.movie.id]);
       }
       markMovieAsSeen(data.movie.id, data.movie.title);
       prefetchNextTmdbMovie([...allExcluded, data.movie.id], activeFilters);
@@ -216,11 +228,11 @@ export async function fetchRandomTmdbMovie(
     MOVIE_DATABASE,
     activeFilters,
     allExcluded,
-    customExcludeIds
+    customExcludeIds.slice(-10)
   );
 
   if (selection.didCycleFilterPool) {
-    clearSeenMoviePool(selection.filterPoolIds, customExcludeIds);
+    clearSeenMoviePool(selection.filterPoolIds, customExcludeIds.slice(-10));
   }
 
   markMovieAsSeen(selection.movie.id, selection.movie.title);
