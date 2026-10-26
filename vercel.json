@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "vite build",
+  "buildCommand": "vite build && esbuild src/serverApp.ts --bundle --platform=node --format=esm --outfile=api/index.js --packages=external",
   "outputDirectory": "dist",
   "rewrites": [
     {
